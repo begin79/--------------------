@@ -6,7 +6,22 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, PicklePersistence, ContextTypes, filters, InlineQueryHandler
 from telegram.error import TimedOut, Conflict, NetworkError
 
-from .config import TOKEN
+# Попытка создать config.py из переменных окружения, если файл отсутствует
+try:
+    from .config import TOKEN
+except ModuleNotFoundError:
+    # Если config.py не существует, попробуем создать его из переменных окружения
+    try:
+        from .create_config_if_missing import create_config_from_env
+        create_config_from_env()
+        from .config import TOKEN
+    except Exception as e:
+        logging.error(f"Не удалось создать config.py: {e}")
+        raise ValueError(
+            "Файл app/config.py не найден и не может быть создан автоматически. "
+            "Установите переменную окружения BOT_TOKEN в панели Amvera "
+            "(Настройки → Переменные окружения) или создайте файл app/config.py вручную."
+        )
 from .handlers import (
     start_command,
     help_command_handler,
