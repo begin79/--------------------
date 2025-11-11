@@ -320,7 +320,20 @@ async def help_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     username = update.effective_user.username or "без username"
     logger.info(f"👤 [{user_id}] @{username} → Команда /help")
 
-    text = "<b>ℹ️ Справка по боту:</b>\n\n🔹 <b>/start</b> - Главное меню.\n🔹 <b>/settings</b> - Настройки уведомлений и группы по умолчанию.\n🔹 <b>/help</b> - Эта справка."
+    text = (
+        "<b>ℹ️ Справка по боту:</b>\n\n"
+        "🔹 <b>/start</b> - Главное меню.\n"
+        "🔹 <b>/settings</b> - Настройки уведомлений и группы по умолчанию.\n"
+        "🔹 <b>/help</b> - Эта справка.\n\n"
+        "<b>📱 Inline режим:</b>\n"
+        "Используйте бота в любом чате! Просто начните вводить:\n"
+        "<code>@Vgltu25_bot группа</code> или <code>@Vgltu25_bot препод</code>\n\n"
+        "Примеры:\n"
+        "• <code>@Vgltu25_bot ИС1-227</code> - поиск группы\n"
+        "• <code>@Vgltu25_bot п Иванов</code> - поиск преподавателя\n"
+        "• <code>@Vgltu25_bot г ИС1</code> - поиск группы (с префиксом)\n\n"
+        "Выберите нужный вариант из списка, и расписание отправится в чат!"
+    )
     reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]])
     if update.callback_query:
         if not await safe_edit_message_text(update.callback_query, text, reply_markup=reply_markup, parse_mode=ParseMode.HTML):
