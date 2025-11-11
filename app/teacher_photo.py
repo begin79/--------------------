@@ -4,7 +4,7 @@
 import logging
 from typing import Optional, Tuple
 from bs4 import BeautifulSoup
-from requests.utils import quote
+from urllib.parse import quote
 
 from .config import BASE_URL_VGLTU
 from .http import make_request_with_retry

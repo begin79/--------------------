@@ -3,7 +3,7 @@ import logging
 import datetime
 from typing import List, Tuple, Optional, Literal, Dict
 from bs4 import BeautifulSoup
-from requests.utils import quote
+from urllib.parse import quote
 from cachetools import TTLCache
 
 from .config import BASE_URL_SCHEDULE, BASE_URL_LIST
