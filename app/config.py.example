@@ -1,0 +1,12 @@
+import os
+
+# Конфиг бота
+# Токен можно задать через переменную окружения BOT_TOKEN
+# Если переменная не задана, будет использовано значение по умолчанию
+TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+
+# Базовые URL для API
+BASE_URL_SCHEDULE = os.getenv("BASE_URL_SCHEDULE", "https://kis.vgltu.ru/schedule")
+BASE_URL_LIST = os.getenv("BASE_URL_LIST", "https://kis.vgltu.ru/list")
+BASE_URL_VGLTU = os.getenv("BASE_URL_VGLTU", "https://vgltu.ru")
+

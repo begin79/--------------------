@@ -40,7 +40,9 @@ admin.db
 *.db-journal
 
 # Config files with sensitive data
+# Разрешаем config.py.example, но не config.py с реальными данными
 app/config.py
+!app/config.py.example
 
 # Logs
 *.log
