@@ -1,28 +1,11 @@
-# Конфигурация для Amvera
-# Документация: https://docs.amvera.ru/
-
-# Версия конфигурации
-version: 1
-
-# Сборка проекта
+---
+version: null
+meta:
+  environment: python
+  toolchain:
+    name: pip
+    version: latest
 build:
-  # Команда для установки зависимостей
-  install:
-    - pip install -r requirements.txt
-
-# Запуск приложения
+  requirementsPath: requirements.txt
 run:
-  # Команда для запуска бота
   command: python new_VGLTU_bot.py
-
-# Переменные окружения
-# ВАЖНО: Задайте BOT_TOKEN в панели Amvera (Настройки → Переменные окружения)
-# Не указывайте токен здесь в открытом виде!
-# env:
-#   BOT_TOKEN: "задайте_в_панели_amvera"
-
-# Ресурсы
-resources:
-  # Минимальные требования
-  memory: 512M
-  cpu: 0.5
