@@ -31,6 +31,8 @@ from .handlers import (
 )
 from .jobs import check_schedule_changes_job
 from .http import close_http_client
+from .admin.database import admin_db
+import os
 
 # Настройка подробного логирования с поддержкой Unicode для Windows
 # Создаем StreamHandler с правильной кодировкой для Windows
@@ -195,6 +197,29 @@ def main() -> None:
     if "YOUR_TOKEN" in TOKEN or len(TOKEN.split(":")[0]) < 8:
         logger.critical("Необходимо указать корректный токен бота!")
         return
+
+    # Автоматическое добавление первого админа из переменной окружения
+    admin_id_env = os.getenv("ADMIN_ID")
+    if admin_id_env:
+        try:
+            admin_id = int(admin_id_env)
+            # Проверяем, не добавлен ли уже этот админ
+            if not admin_db.is_admin(admin_id):
+                if admin_db.add_admin(admin_id, username=None, added_by=None):
+                    logger.info(f"✅ Администратор {admin_id} автоматически добавлен из переменной окружения ADMIN_ID")
+                else:
+                    logger.warning(f"⚠️ Не удалось добавить администратора {admin_id} из переменной окружения")
+            else:
+                logger.debug(f"Администратор {admin_id} уже существует")
+        except ValueError:
+            logger.warning(f"⚠️ Неверный формат ADMIN_ID: {admin_id_env}. Должно быть число.")
+    else:
+        # Проверяем, есть ли хотя бы один админ
+        admins = admin_db.get_all_admins()
+        if not admins:
+            logger.warning("⚠️ ВНИМАНИЕ: Нет ни одного администратора!")
+            logger.warning("   Установите переменную окружения ADMIN_ID=<ваш_telegram_id> в панели Amvera")
+            logger.warning("   Или используйте команду: python add_admin.py <ваш_id>")
 
     app = build_app()
     logger.info("Бот запускается...")
