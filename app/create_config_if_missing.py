@@ -41,8 +41,11 @@ if not TOKEN:
     # Записываем файл
     try:
         config_path.write_text(config_content, encoding='utf-8')
-        print(f"✓ Создан файл {config_path} из переменных окружения")
+        # Используем print, так как logging может быть еще не настроен
+        import sys
+        print(f"[INFO] Создан файл {config_path} из переменных окружения", file=sys.stderr)
     except Exception as e:
-        print(f"✗ Ошибка при создании config.py: {e}")
+        import sys
+        print(f"[ERROR] Ошибка при создании config.py: {e}", file=sys.stderr)
         raise
 
