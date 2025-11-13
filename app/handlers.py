@@ -7,7 +7,7 @@ from dateutil.parser import parse as parse_date
 from typing import Optional, Tuple
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, Message, InlineQueryResultArticle, InputTextMessageContent, InputMediaPhoto
 from telegram.constants import ParseMode, ChatAction
-from telegram.error import BadRequest, NetworkError, TimedOut
+from telegram.error import BadRequest, NetworkError, TimedOut, Forbidden
 from telegram.ext import ContextTypes
 
 from .constants import (
@@ -27,6 +27,12 @@ from .utils import escape_html
 from .schedule import get_schedule, search_entities
 from .database import db
 from .admin.utils import is_bot_enabled, get_maintenance_message
+from .admin.handlers import (
+    CALLBACK_ADMIN_MESSAGE_USER_PREFIX,
+    CALLBACK_ADMIN_USER_DETAILS_PREFIX,
+    CALLBACK_USER_REPLY_ADMIN_PREFIX,
+    CALLBACK_USER_DISMISS_ADMIN_PREFIX,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +103,217 @@ def set_user_busy(user_data: dict, busy: bool = True):
         user_data[CTX_IS_BUSY] = True
     else:
         user_data.pop(CTX_IS_BUSY, None)
+
+
+def _get_admin_dialog_storage(context: ContextTypes.DEFAULT_TYPE) -> dict:
+    """Возвращает словарь активных диалогов админ ↔ пользователь"""
+    return context.application.bot_data.setdefault("admin_dialogs", {})
+
+
+def _schedule_daily_notifications(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_data: dict):
+    """Перенастраивает ежедневное уведомление согласно текущим настройкам пользователя"""
+    if not context.job_queue or not chat_id:
+        return
+
+    job_name = f"daily_schedule_{chat_id}"
+    for job in context.job_queue.get_jobs_by_name(job_name):
+        try:
+            job.schedule_removal()
+        except Exception:
+            pass
+
+    query = user_data.get(CTX_DEFAULT_QUERY)
+    mode = user_data.get(CTX_DEFAULT_MODE)
+    if not query or not mode:
+        return
+
+    time_str = user_data.get(CTX_NOTIFICATION_TIME, "21:00") or "21:00"
+    try:
+        hour, minute = map(int, time_str.split(":"))
+    except ValueError:
+        hour, minute = 21, 0
+        time_str = "21:00"
+        user_data[CTX_NOTIFICATION_TIME] = time_str
+
+    utc_hour = (hour - 3) % 24
+    job_data = {"query": query, "mode": mode}
+    context.job_queue.run_daily(
+        __import__("app.jobs").jobs.daily_schedule_job,
+        time=datetime.time(utc_hour, minute, tzinfo=datetime.timezone.utc),
+        chat_id=chat_id,
+        name=job_name,
+        data=job_data,
+    )
+
+
+async def _apply_default_selection(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    chosen: str,
+    mode: str,
+    source: str = "message",
+):
+    """Финализирует установку расписания по умолчанию и включает уведомления"""
+    user_data = context.user_data
+    user_id = update.effective_user.id if update.effective_user else None
+    username = update.effective_user.username if update.effective_user else None
+    first_name = update.effective_user.first_name if update.effective_user else None
+    last_name = update.effective_user.last_name if update.effective_user else None
+
+    user_data[CTX_DEFAULT_QUERY] = chosen
+    user_data[CTX_DEFAULT_MODE] = mode
+    if not user_data.get(CTX_NOTIFICATION_TIME):
+        user_data[CTX_NOTIFICATION_TIME] = "21:00"
+
+    notifications_were_enabled = bool(user_data.get(CTX_DAILY_NOTIFICATIONS, False))
+    user_data[CTX_DAILY_NOTIFICATIONS] = True
+
+    save_user_data_to_db(
+        user_id=user_id,
+        username=username,
+        first_name=first_name,
+        last_name=last_name,
+        user_data=user_data,
+    )
+    if user_id:
+        db.log_activity(user_id, "set_default_query", f"mode={mode}, query={chosen}")
+        if not notifications_were_enabled:
+            db.log_activity(user_id, "auto_enable_notifications", f"mode={mode}")
+
+    chat_id = update.effective_chat.id if update.effective_chat else user_id
+    _schedule_daily_notifications(context, chat_id, user_data)
+
+    time_str = user_data.get(CTX_NOTIFICATION_TIME, "21:00")
+    notif_line = (
+        f"🔔 Ежедневные уведомления уже были включены на {time_str}."
+        if notifications_were_enabled
+        else f"🔔 Ежедневные уведомления автоматически включены на {time_str}."
+    )
+    reply_keyboard = get_default_reply_keyboard()
+    info_text = (
+        f"✅ Установлено по умолчанию: <b>{escape_html(chosen)}</b>\n"
+        f"{notif_line}"
+    )
+
+    if source == "message" and update.message:
+        await update.message.reply_text(
+            info_text,
+            reply_markup=reply_keyboard,
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await update.effective_chat.send_message(
+            info_text,
+            reply_markup=reply_keyboard,
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def start_user_reply_to_admin(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    admin_id: int,
+):
+    """Подготовить пользователя к отправке ответа администратору"""
+    user_data = context.user_data
+    user_id = update.effective_user.id if update.effective_user else None
+    user_data["pending_admin_reply"] = admin_id
+
+    dialogs = _get_admin_dialog_storage(context)
+    if user_id is not None:
+        entry = dialogs.get(user_id, {})
+        entry.update({"admin_id": admin_id, "last_prompt_at": datetime.datetime.utcnow().isoformat()})
+        dialogs[user_id] = entry
+
+    try:
+        await update.callback_query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    await update.callback_query.answer("Напишите ответ администратору.", show_alert=False)
+    await update.callback_query.message.reply_text(
+        "✏️ Напишите ваш ответ администратору. Чтобы отменить, отправьте 'отмена' или /cancel."
+    )
+
+
+async def handle_user_dismiss_admin_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    admin_id: int,
+):
+    """Пользователь закрыл уведомление администратора"""
+    user_data = context.user_data
+    if user_data.get("pending_admin_reply") == admin_id:
+        user_data.pop("pending_admin_reply", None)
+
+    user_id = update.effective_user.id if update.effective_user else None
+    dialogs = _get_admin_dialog_storage(context)
+    if user_id is not None:
+        dialogs.pop(user_id, None)
+
+    try:
+        await update.callback_query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    await update.callback_query.answer("Уведомление закрыто.", show_alert=False)
+    await update.callback_query.message.reply_text("Если потребуется, вы всегда можете открыть /settings и связаться с администратором ещё раз.")
+
+
+async def process_user_reply_to_admin_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    admin_id: int,
+    text: str,
+):
+    """Отправить ответ пользователя администратору"""
+    user_data = context.user_data
+    user_id = update.effective_user.id if update.effective_user else None
+    username = update.effective_user.username if update.effective_user else None
+    full_name = update.effective_user.full_name if update.effective_user else (update.effective_user.first_name if update.effective_user else "")
+
+    user_data.pop("pending_admin_reply", None)
+
+    dialogs = _get_admin_dialog_storage(context)
+    if user_id is not None:
+        dialogs[user_id] = {
+            "admin_id": admin_id,
+            "last_reply_at": datetime.datetime.utcnow().isoformat()
+        }
+
+    username_display = f"@{escape_html(username)}" if username else "без username"
+    full_name_display = escape_html(full_name) if full_name else "не указано"
+
+    admin_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✉️ Ответить пользователю", callback_data=f"{CALLBACK_ADMIN_MESSAGE_USER_PREFIX}{user_id}")],
+        [InlineKeyboardButton("👤 Профиль пользователя", callback_data=f"{CALLBACK_ADMIN_USER_DETAILS_PREFIX}{user_id}")],
+    ])
+
+    admin_message = (
+        "📥 <b>Ответ от пользователя</b>\n\n"
+        f"ID: <code>{user_id}</code>\n"
+        f"Username: {username_display}\n"
+        f"Имя: {full_name_display}\n\n"
+        f"{escape_html(text)}"
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=admin_id,
+            text=admin_message,
+            parse_mode=ParseMode.HTML,
+            reply_markup=admin_keyboard
+        )
+        if user_id:
+            db.log_activity(user_id, "admin_reply_sent", f"to={admin_id}")
+    except Forbidden:
+        logger.warning(f"Админ {admin_id} недоступен для получения ответа пользователя {user_id}")
+    except BadRequest as e:
+        logger.error(f"Ошибка телеграма при доставке ответа пользователя {user_id} админу {admin_id}: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка при доставке ответа пользователя {user_id} админу {admin_id}: {e}", exc_info=True)
+
+    await update.message.reply_text("✅ Ваш ответ отправлен администратору.")
 
 async def safe_get_schedule(date: str, query: str, api_type: str, timeout: float = 30.0):
     """Безопасное получение расписания с таймаутом"""
@@ -412,6 +629,16 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     logger.info(f"💬 [{user_id}] @{username} ({first_name}) → Текстовое сообщение: '{text[:50]}{'...' if len(text) > 50 else ''}'")
 
+    pending_admin_id = user_data.get("pending_admin_reply")
+    if pending_admin_id:
+        lowered = text.lower()
+        if lowered in {"отмена", "cancel", "/cancel"}:
+            user_data.pop("pending_admin_reply", None)
+            await update.message.reply_text("✅ Ответ администратору отменён.")
+        else:
+            await process_user_reply_to_admin_message(update, context, pending_admin_id, text)
+        return
+
     # Проверяем, не занят ли пользователь
     if check_user_busy(user_data):
         await update.message.reply_text("⏳ Пожалуйста, подождите, я обрабатываю предыдущий запрос...")
@@ -481,8 +708,6 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
 
     user_id = update.effective_user.id
     username = update.effective_user.username or "без username"
-    first_name = update.effective_user.first_name
-    last_name = update.effective_user.last_name
     user_data = context.user_data
 
     # Устанавливаем блокировку
@@ -501,9 +726,6 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
         else:
             logger.warning(f"❌ [{user_id}] Не найдено вариантов для '{text}': {err}")
 
-        # Устанавливаем стандартную клавиатуру
-        reply_keyboard = get_default_reply_keyboard()
-
         if err or not found:
             kbd = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_DATA_SETTINGS_MENU)]])
             await update.message.reply_text("Не удалось найти. Попробуйте еще раз.", reply_markup=kbd)
@@ -512,14 +734,8 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
         match = next((e for e in found if e.lower() == text.lower()), None)
         if match:
             logger.info(f"✅ [{user_id}] @{username} → Установлено по умолчанию: '{match}' (режим: {mode_text})")
-            user_data[CTX_DEFAULT_QUERY], user_data[CTX_DEFAULT_MODE] = match, mode
             user_data.pop(CTX_AWAITING_DEFAULT_QUERY, None)
-
-            # Сохраняем в БД
-            save_user_data_to_db(user_id, username, first_name, last_name, user_data)
-            db.log_activity(user_id, "set_default_query", f"mode={mode}, query={match}")
-
-            await update.message.reply_text(f"✅ Установлено по умолчанию: {match}", reply_markup=reply_keyboard)
+            await _apply_default_selection(update, context, match, mode, source="message")
             await settings_menu_callback(update, context)
             return
 
@@ -779,9 +995,9 @@ async def send_schedule_with_pagination(update: Update, context: ContextTypes.DE
         target = msg_to_edit or (update.callback_query and update.callback_query.message)
         if target:
             try:
-                logger.debug(f"Отправка сообщения с клавиатурой через edit_text")
+                logger.debug("Отправка сообщения с клавиатурой через edit_text")
                 await target.edit_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
-                logger.debug(f"✅ Сообщение успешно обновлено с клавиатурой")
+                logger.debug("✅ Сообщение успешно обновлено с клавиатурой")
             except BadRequest as e:
                 if "no text in the message" in str(e).lower():
                     # Сообщение содержит фото/документ, отправляем новое
@@ -1420,7 +1636,6 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
         # Собираем все картинки и подписи
         media_group = []
         generated_count = 0
-        total_days = 6
 
         for day_offset in range(6):  # Пн-Сб
             current_date = monday + datetime.timedelta(days=day_offset)
@@ -1572,7 +1787,26 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = context.user_data
 
     # Проверяем, не админский ли это callback
-    from .admin.handlers import admin_callback_router, CALLBACK_ADMIN_MENU
+    from .admin.handlers import admin_callback_router
+
+    if data.startswith(CALLBACK_USER_REPLY_ADMIN_PREFIX):
+        admin_id_str = data.replace(CALLBACK_USER_REPLY_ADMIN_PREFIX, "", 1)
+        try:
+            admin_id = int(admin_id_str)
+        except ValueError:
+            await safe_answer_callback_query(update.callback_query, "Администратор не найден", show_alert=True)
+            return
+        await start_user_reply_to_admin(update, context, admin_id)
+        return
+    if data.startswith(CALLBACK_USER_DISMISS_ADMIN_PREFIX):
+        admin_id_str = data.replace(CALLBACK_USER_DISMISS_ADMIN_PREFIX, "", 1)
+        try:
+            admin_id = int(admin_id_str)
+        except ValueError:
+            await safe_answer_callback_query(update.callback_query, "Действие недоступно", show_alert=True)
+            return
+        await handle_user_dismiss_admin_message(update, context, admin_id)
+        return
     if data.startswith("admin_"):
         await admin_callback_router(update, context)
         return
@@ -1653,14 +1887,9 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 options = user_data.get(f"default_options_{mode}", [])
                 if 0 <= idx < len(options):
                     chosen = options[idx]
-                    user_data[CTX_DEFAULT_QUERY] = chosen
-                    user_data[CTX_DEFAULT_MODE] = mode
                     user_data.pop(f"default_options_{mode}", None)
                     user_data.pop(CTX_AWAITING_DEFAULT_QUERY, None)
-                    first_name = update.effective_user.first_name if update.effective_user else None
-                    last_name = update.effective_user.last_name if update.effective_user else None
-                    save_user_data_to_db(user_id, username, first_name, last_name, user_data)
-                    db.log_activity(user_id, "set_default_query", f"mode={mode}, query={chosen}")
+                    await _apply_default_selection(update, context, chosen, mode, source="callback")
                     await safe_edit_message_text(
                         update.callback_query,
                         f"✅ Установлено по умолчанию: <b>{escape_html(chosen)}</b>",

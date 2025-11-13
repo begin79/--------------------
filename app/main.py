@@ -142,14 +142,21 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("settings", settings_menu_callback))
 
     # Админ-панель
-    from .admin.handlers import admin_command, handle_maintenance_message_input, handle_admin_id_input, handle_remove_admin_id_input, handle_broadcast_input
+    from .admin.handlers import (
+        admin_command,
+        handle_maintenance_message_input,
+        handle_admin_id_input,
+        handle_remove_admin_id_input,
+        handle_broadcast_input,
+        handle_direct_message_input,
+    )
     app.add_handler(CommandHandler("admin", admin_command))
 
     # Обработка текстовых сообщений (должен быть после команд, но команды уже обработаны)
     # Сначала проверяем админские команды
     from .admin.handlers import (
         handle_maintenance_message_input, handle_admin_id_input,
-        handle_remove_admin_id_input, handle_broadcast_input, handle_user_search_input
+        handle_remove_admin_id_input, handle_broadcast_input, handle_user_search_input, handle_direct_message_input
     )
     from .admin.utils import is_admin
 
@@ -175,6 +182,9 @@ def build_app() -> Application:
                 return
             elif context.user_data.get('awaiting_user_search'):
                 await handle_user_search_input(update, context)
+                return
+            elif context.user_data.get('awaiting_direct_message'):
+                await handle_direct_message_input(update, context)
                 return
 
         # Обычная обработка сообщений

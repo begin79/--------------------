@@ -4,10 +4,11 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ParseMode
+from telegram.error import Forbidden, BadRequest
 from telegram.ext import ContextTypes
 
 from .database import admin_db
@@ -35,6 +36,10 @@ CALLBACK_ADMIN_USERS = "admin_users"
 CALLBACK_ADMIN_USERS_LIST = "admin_users_list"
 CALLBACK_ADMIN_USERS_PAGE_PREFIX = "admin_users_page_"
 CALLBACK_ADMIN_USER_DETAILS_PREFIX = "admin_user_details_"
+CALLBACK_ADMIN_MESSAGE_USER_PREFIX = "admin_message_user_"
+CALLBACK_ADMIN_MESSAGE_CANCEL = "admin_message_cancel"
+CALLBACK_USER_REPLY_ADMIN_PREFIX = "user_reply_admin_"
+CALLBACK_USER_DISMISS_ADMIN_PREFIX = "user_dismiss_admin_"
 CALLBACK_ADMIN_CACHE = "admin_cache"
 CALLBACK_ADMIN_LOGS = "admin_logs"
 CALLBACK_ADMIN_BROADCAST = "admin_broadcast"
@@ -450,6 +455,12 @@ async def admin_users_list_callback(
                     callback_data=f"{CALLBACK_ADMIN_USER_DETAILS_PREFIX}{user_id}",
                 )
             ])
+            kbd_rows.append([
+                InlineKeyboardButton(
+                    "✉️ Написать сообщение",
+                    callback_data=f"{CALLBACK_ADMIN_MESSAGE_USER_PREFIX}{user_id}",
+                )
+            ])
 
         nav_row = []
         if page > 0:
@@ -562,6 +573,7 @@ async def admin_user_details_callback(
     back_page = context.user_data.get("admin_users_page", 0)
     kbd_rows = [
         [InlineKeyboardButton("🔄 Обновить", callback_data=f"{CALLBACK_ADMIN_USER_DETAILS_PREFIX}{user_id}")],
+        [InlineKeyboardButton("✉️ Написать сообщение", callback_data=f"{CALLBACK_ADMIN_MESSAGE_USER_PREFIX}{user_id}")],
         [InlineKeyboardButton("⬅️ К списку", callback_data=f"{CALLBACK_ADMIN_USERS_PAGE_PREFIX}{back_page}")],
     ]
     if username != "без username":
@@ -576,6 +588,159 @@ async def admin_user_details_callback(
 
     await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
     await update.callback_query.answer()
+
+
+def _get_dialog_storage(context: ContextTypes.DEFAULT_TYPE) -> Dict[int, Dict[str, Any]]:
+    """Получить словарь активных диалогов админ↔пользователь"""
+    return context.application.bot_data.setdefault("admin_dialogs", {})
+
+
+async def admin_message_user_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+):
+    """Запрос на отправку сообщения конкретному пользователю"""
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        return
+
+    context.user_data["awaiting_direct_message"] = True
+    context.user_data["direct_message_target"] = user_id
+
+    username = update.effective_user.username or "без username"
+    prompt = (
+        f"✉️ <b>Отправка сообщения пользователю</b>\n\n"
+        f"Введите текст, который хотите отправить пользователю <code>{user_id}</code>.\n"
+        f"После отправки пользователь увидит, что сообщение от администратора и сможет ответить.\n\n"
+        f"💡 Администратор: @{escape_html(username)}"
+    )
+
+    back_buttons = [
+        [InlineKeyboardButton("❌ Отмена", callback_data=CALLBACK_ADMIN_MESSAGE_CANCEL)],
+        [InlineKeyboardButton("⬅️ К профилю", callback_data=f"{CALLBACK_ADMIN_USER_DETAILS_PREFIX}{user_id}")]
+    ]
+    kbd = InlineKeyboardMarkup(back_buttons)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(prompt, reply_markup=kbd, parse_mode=ParseMode.HTML)
+        await update.callback_query.answer()
+    else:
+        await update.message.reply_text(prompt, reply_markup=kbd, parse_mode=ParseMode.HTML)
+
+
+async def admin_cancel_direct_message_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена режима отправки прямого сообщения"""
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        return
+
+    context.user_data.pop("awaiting_direct_message", None)
+    context.user_data.pop("direct_message_target", None)
+
+    text = "❌ Отправка сообщения отменена."
+
+    kbd = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_ADMIN_USERS)]
+    ])
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=kbd)
+        await update.callback_query.answer()
+    else:
+        await update.message.reply_text(text, reply_markup=kbd)
+
+
+async def handle_direct_message_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ввода текста для конкретного пользователя"""
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        return
+
+    if not context.user_data.get("awaiting_direct_message"):
+        return
+
+    target_id = context.user_data.get("direct_message_target")
+    if not target_id:
+        await update.message.reply_text("Не удалось определить получателя. Попробуйте заново из списка пользователей.")
+        context.user_data.pop("awaiting_direct_message", None)
+        return
+
+    message_text = update.message.text.strip()
+    if not message_text:
+        await update.message.reply_text("Отправьте текстовое сообщение для пользователя.")
+        return
+
+    admin = update.effective_user
+    admin_id = admin.id
+    admin_username = admin.username or "без username"
+    admin_name = admin.full_name or admin.first_name or "Администратор"
+
+    dialogs = _get_dialog_storage(context)
+    dialogs[target_id] = {
+        "admin_id": admin_id,
+        "admin_username": admin_username,
+        "last_sent_at": datetime.utcnow().isoformat()
+    }
+
+    user_keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✉️ Ответить", callback_data=f"{CALLBACK_USER_REPLY_ADMIN_PREFIX}{admin_id}"),
+            InlineKeyboardButton("✅ Спасибо", callback_data=f"{CALLBACK_USER_DISMISS_ADMIN_PREFIX}{admin_id}")
+        ]
+    ])
+
+    user_message = (
+        "📬 <b>Сообщение от администратора</b>\n\n"
+        f"<b>{escape_html(admin_name)}</b> (@{escape_html(admin_username)}) написал:\n"
+        f"{escape_html(message_text)}\n\n"
+        "Вы можете ответить администратору или закрыть это уведомление."
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text=user_message,
+            parse_mode=ParseMode.HTML,
+            reply_markup=user_keyboard
+        )
+        db.log_activity(target_id, "admin_message_received", f"from={admin_id}")
+    except Forbidden:
+        await update.message.reply_text(
+            "⚠️ Пользователь заблокировал бота или недоступен. Сообщение не доставлено."
+        )
+        logger.warning(f"Админ {admin_id} не смог отправить сообщение пользователю {target_id}: Forbidden")
+        dialogs.pop(target_id, None)
+        return
+    except BadRequest as e:
+        await update.message.reply_text(
+            f"❌ Не удалось отправить сообщение: {e}"
+        )
+        logger.error(f"Ошибка телеграма при отправке сообщения пользователю {target_id}: {e}")
+        dialogs.pop(target_id, None)
+        return
+    except Exception as e:
+        await update.message.reply_text("❌ Не удалось отправить сообщение пользователю.")
+        logger.error(f"Ошибка при отправке сообщения пользователю {target_id}: {e}", exc_info=True)
+        dialogs.pop(target_id, None)
+        return
+
+    context.user_data.pop("awaiting_direct_message", None)
+    context.user_data.pop("direct_message_target", None)
+
+    confirm_text = (
+        f"✅ Сообщение отправлено пользователю <code>{target_id}</code>.\n"
+        f"Текст:\n<pre>{escape_html(message_text)}</pre>"
+    )
+    confirm_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✉️ Написать ещё", callback_data=f"{CALLBACK_ADMIN_MESSAGE_USER_PREFIX}{target_id}")],
+        [InlineKeyboardButton("⬅️ К профилю", callback_data=f"{CALLBACK_ADMIN_USER_DETAILS_PREFIX}{target_id}")],
+        [InlineKeyboardButton("⬅️ Меню", callback_data=CALLBACK_ADMIN_USERS)]
+    ])
+
+    await update.message.reply_text(
+        confirm_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=confirm_keyboard
+    )
+    logger.info(f"Админ {admin_id} отправил сообщение пользователю {target_id}")
 
 async def admin_users_search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Поиск пользователя"""
@@ -1009,6 +1174,28 @@ async def admin_callback_router(update: Update, context: ContextTypes.DEFAULT_TY
         await admin_remove_admin_callback(update, context)
     elif data == CALLBACK_ADMIN_BROADCAST:
         await admin_broadcast_callback(update, context)
+    elif data.startswith(CALLBACK_ADMIN_USERS_PAGE_PREFIX):
+        try:
+            page = int(data.replace(CALLBACK_ADMIN_USERS_PAGE_PREFIX, "", 1))
+        except ValueError:
+            page = 0
+        await admin_users_list_callback(update, context, page=page)
+    elif data.startswith(CALLBACK_ADMIN_USER_DETAILS_PREFIX):
+        try:
+            user_id = int(data.replace(CALLBACK_ADMIN_USER_DETAILS_PREFIX, "", 1))
+        except ValueError:
+            await update.callback_query.answer("Пользователь не найден", show_alert=True)
+            return
+        await admin_user_details_callback(update, context, user_id)
+    elif data.startswith(CALLBACK_ADMIN_MESSAGE_USER_PREFIX):
+        try:
+            user_id = int(data.replace(CALLBACK_ADMIN_MESSAGE_USER_PREFIX, "", 1))
+        except ValueError:
+            await update.callback_query.answer("Пользователь не найден", show_alert=True)
+            return
+        await admin_message_user_callback(update, context, user_id)
+    elif data == CALLBACK_ADMIN_MESSAGE_CANCEL:
+        await admin_cancel_direct_message_callback(update, context)
     elif data.startswith(CALLBACK_ADMIN_CONFIRM_TOGGLE):
         await admin_confirm_toggle_callback(update, context, data)
     else:
