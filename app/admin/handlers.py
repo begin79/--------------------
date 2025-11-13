@@ -920,16 +920,30 @@ async def handle_broadcast_input(update: Update, context: ContextTypes.DEFAULT_T
 
     # Получаем всех пользователей
     all_users = db.get_all_users()
-    total = len(all_users)
+    target_ids = db.get_all_known_user_ids(include_activity_log=True)
+    total = len(target_ids)
 
-    await update.message.reply_text(f"📤 Начинаю рассылку для {total} пользователей...")
+    if total == 0:
+        await update.message.reply_text("ℹ️ Пока нет пользователей для рассылки.")
+        return
+
+    stored_user_ids = {user.get('user_id') for user in all_users if user.get('user_id')}
+    additional_from_log = len(set(target_ids) - stored_user_ids)
+
+    info_suffix = ""
+    if additional_from_log > 0:
+        info_suffix = f"\nℹ️ Дополнительно найдено в журнале активности: {additional_from_log}"
+
+    await update.message.reply_text(f"📤 Начинаю рассылку для {total} пользователей...{info_suffix}")
 
     success = 0
     failed = 0
 
-    for user in all_users:
+    for raw_user_id in target_ids:
+        if raw_user_id is None:
+            continue
         try:
-            user_id = user['user_id']
+            user_id = int(raw_user_id)
             await context.bot.send_message(
                 chat_id=user_id,
                 text=message_text,
@@ -940,7 +954,7 @@ async def handle_broadcast_input(update: Update, context: ContextTypes.DEFAULT_T
             await asyncio.sleep(0.05)
         except Exception as e:
             failed += 1
-            logger.debug(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
+            logger.debug(f"Не удалось отправить сообщение пользователю {raw_user_id}: {e}")
 
     text = (
         f"✅ <b>Рассылка завершена!</b>\n\n"

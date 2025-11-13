@@ -211,6 +211,32 @@ class UserDatabase:
             logger.error(f"Ошибка получения списка пользователей: {e}", exc_info=True)
             return []
 
+    def get_all_known_user_ids(self, include_activity_log: bool = True) -> list:
+        """
+        Получить множество всех известных user_id.
+        Включает пользователей из основной таблицы users и (опционально) user_id из журнала активности.
+        """
+        try:
+            conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            cursor = conn.cursor()
+
+            user_ids = set()
+
+            cursor.execute('SELECT user_id FROM users')
+            user_ids.update(row[0] for row in cursor.fetchall() if row and row[0])
+
+            if include_activity_log:
+                cursor.execute('SELECT DISTINCT user_id FROM activity_log WHERE user_id IS NOT NULL')
+                user_ids.update(row[0] for row in cursor.fetchall() if row and row[0])
+
+            conn.close()
+
+            # Возвращаем отсортированный список для предсказуемого порядка обхода
+            return sorted(user_ids)
+        except Exception as e:
+            logger.error(f"Ошибка получения списка user_id: {e}", exc_info=True)
+            return []
+
     def delete_user(self, user_id: int):
         """Удалить пользователя из базы данных"""
         try:
