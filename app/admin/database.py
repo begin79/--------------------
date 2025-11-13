@@ -3,6 +3,7 @@
 """
 import sqlite3
 import logging
+import os
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from datetime import datetime
@@ -10,14 +11,33 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 # Используем ту же БД, что и основной бот
-DB_PATH = Path("users.db")
+try:
+    from ..database import DB_PATH as USERS_DB_PATH
+except Exception:
+    USERS_DB_PATH = Path(os.getenv("USERS_DB_PATH", "users.db")).expanduser()
+
+DB_PATH = USERS_DB_PATH
 
 class AdminDatabase:
     """Класс для работы с админ-данными в базе данных"""
 
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.warning(f"Не удалось создать директорию для админ-БД {self.db_path.parent}: {e}")
+        self.root_admin_id = self._resolve_root_admin_id()
         self._init_admin_tables()
+
+    @staticmethod
+    def _resolve_root_admin_id() -> Optional[int]:
+        admin_id_env = os.getenv("ADMIN_ID")
+        try:
+            return int(admin_id_env) if admin_id_env else None
+        except ValueError:
+            logger.warning(f"Неверный формат ADMIN_ID: {admin_id_env}")
+            return None
 
     def _init_admin_tables(self):
         """Инициализация таблиц для админ-панели"""
@@ -97,6 +117,9 @@ class AdminDatabase:
 
     def remove_admin(self, user_id: int) -> bool:
         """Удалить администратора"""
+        if self.root_admin_id and user_id == self.root_admin_id:
+            logger.warning("Попытка удалить главного администратора отклонена")
+            return False
         try:
             conn = sqlite3.connect(self.db_path, check_same_thread=False)
             cursor = conn.cursor()

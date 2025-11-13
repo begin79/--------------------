@@ -1,11 +1,27 @@
 """
 Утилиты для админ-панели
 """
+import os
+from typing import Optional
+
 from .database import admin_db
 
 def is_admin(user_id: int) -> bool:
     """Проверить, является ли пользователь администратором"""
     return admin_db.is_admin(user_id)
+
+def get_root_admin_id() -> Optional[int]:
+    """Получить ID главного администратора из переменных окружения"""
+    admin_id_env = os.getenv("ADMIN_ID")
+    try:
+        return int(admin_id_env) if admin_id_env else None
+    except ValueError:
+        return None
+
+def is_root_admin(user_id: int) -> bool:
+    """Проверить, является ли пользователь главным администратором"""
+    root_id = get_root_admin_id()
+    return root_id is not None and user_id == root_id
 
 def is_bot_enabled() -> bool:
     """Проверить, включен ли бот"""

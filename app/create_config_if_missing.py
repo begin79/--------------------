@@ -14,6 +14,7 @@ def create_config_from_env():
     
     # Получаем значения из переменных окружения
     token = os.getenv("BOT_TOKEN", "")
+    bot_username = os.getenv("BOT_USERNAME", "Vgltu25_bot")
     base_url_schedule = os.getenv("BASE_URL_SCHEDULE", "https://kis.vgltu.ru/schedule")
     base_url_list = os.getenv("BASE_URL_LIST", "https://kis.vgltu.ru/list")
     base_url_vgltu = os.getenv("BASE_URL_VGLTU", "https://vgltu.ru")
@@ -24,6 +25,7 @@ def create_config_from_env():
 # Конфиг бота
 # Токен задается через переменную окружения BOT_TOKEN
 TOKEN = os.getenv("BOT_TOKEN", "{token}")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "{bot_username}")
 
 # Базовые URL для API
 BASE_URL_SCHEDULE = os.getenv("BASE_URL_SCHEDULE", "{base_url_schedule}")

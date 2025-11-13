@@ -2,8 +2,8 @@
 
 ## Проблема
 ```
-WARNING: Retrying (Retry(total=9, connect=None, read=None, redirect=None, status=None)) 
-after connection broken by 'ReadTimeoutError("HTTPSConnectionPool(host='pypi-lightmirrors.lightmirrors', 
+WARNING: Retrying (Retry(total=9, connect=None, read=None, redirect=None, status=None))
+after connection broken by 'ReadTimeoutError("HTTPSConnectionPool(host='pypi-lightmirrors.lightmirrors',
 port=443): Read timed out. (read timeout=45.0)")'
 ```
 

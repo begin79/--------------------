@@ -4,6 +4,7 @@ import os
 # Токен можно задать через переменную окружения BOT_TOKEN
 # Если переменная не задана, будет использовано значение по умолчанию
 TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "Vgltu25_bot")
 
 # Базовые URL для API
 BASE_URL_SCHEDULE = os.getenv("BASE_URL_SCHEDULE", "https://kis.vgltu.ru/schedule")

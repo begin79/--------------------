@@ -5,15 +5,23 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
+
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from .database import admin_db
-from .utils import is_admin, is_bot_enabled, set_bot_status, get_maintenance_message, set_maintenance_message
+from .utils import (
+    is_admin,
+    is_bot_enabled,
+    set_bot_status,
+    get_maintenance_message,
+    set_maintenance_message,
+    get_root_admin_id,
+    is_root_admin,
+)
 from ..database import db
 from ..utils import escape_html
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +32,9 @@ CALLBACK_ADMIN_BOT_STATUS = "admin_bot_status"
 CALLBACK_ADMIN_TOGGLE_BOT = "admin_toggle_bot"
 CALLBACK_ADMIN_SET_MAINTENANCE_MSG = "admin_set_maintenance_msg"
 CALLBACK_ADMIN_USERS = "admin_users"
+CALLBACK_ADMIN_USERS_LIST = "admin_users_list"
+CALLBACK_ADMIN_USERS_PAGE_PREFIX = "admin_users_page_"
+CALLBACK_ADMIN_USER_DETAILS_PREFIX = "admin_user_details_"
 CALLBACK_ADMIN_CACHE = "admin_cache"
 CALLBACK_ADMIN_LOGS = "admin_logs"
 CALLBACK_ADMIN_BROADCAST = "admin_broadcast"
@@ -32,6 +43,30 @@ CALLBACK_ADMIN_REMOVE_ADMIN = "admin_remove_admin"
 CALLBACK_ADMIN_LIST_ADMINS = "admin_list_admins"
 CALLBACK_ADMIN_CONFIRM_TOGGLE = "admin_confirm_toggle"
 CALLBACK_ADMIN_CANCEL_TOGGLE = "admin_cancel_toggle"
+
+USERS_PAGE_SIZE = 10
+
+def format_timestamp(value: Optional[str]) -> str:
+    """Приводит ISO-дату к читаемому виду"""
+    if not value:
+        return "неизвестно"
+    try:
+        ts = value
+        if isinstance(value, datetime):
+            dt = value
+        else:
+            if isinstance(value, str):
+                ts = value.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(str(ts))
+        return dt.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return str(value)
+
+def display_username(raw_username: Optional[str]) -> str:
+    """Форматирует username для отображения"""
+    if not raw_username:
+        return "без username"
+    return raw_username
 
 def require_admin(func):
     """Декоратор для проверки прав администратора"""
@@ -327,7 +362,7 @@ async def admin_users_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
     kbd = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Список пользователей", callback_data="admin_users_list")],
+        [InlineKeyboardButton("📋 Список пользователей", callback_data=CALLBACK_ADMIN_USERS_LIST)],
         [InlineKeyboardButton("🔍 Найти пользователя", callback_data="admin_users_search")],
         [InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_ADMIN_MENU)]
     ])
@@ -335,51 +370,212 @@ async def admin_users_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
     await update.callback_query.answer()
 
-async def admin_users_list_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Список пользователей"""
+async def admin_users_list_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    page: int = 0,
+):
+    """Список пользователей с пагинацией"""
     if not update.effective_user or not is_admin(update.effective_user.id):
         return
 
     try:
         all_users = db.get_all_users()
-        total = len(all_users)
+        root_id = get_root_admin_id()
+        visible_users = [
+            user for user in all_users if user.get("user_id") != root_id
+        ]
+        total = len(visible_users)
 
         if total == 0:
             text = "👥 <b>Список пользователей</b>\n\nПользователей пока нет."
-        else:
-            # Показываем первые 20 пользователей
-            users_to_show = all_users[:20]
-            text = f"👥 <b>Список пользователей</b>\n\nВсего: {total}\n\n"
+            kbd = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_ADMIN_USERS)]
+            ])
+            await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+            await update.callback_query.answer()
+            return
 
-            for i, user in enumerate(users_to_show, 1):
-                username = user.get('username', 'без username')
-                user_id = user.get('user_id', 'N/A')
-                last_active = user.get('last_active', 'никогда')
-                try:
-                    if last_active and last_active != 'никогда':
-                        # Пытаемся отформатировать дату
-                        if 'T' in str(last_active):
-                            from datetime import datetime
-                            date_obj = datetime.fromisoformat(str(last_active).replace('Z', '+00:00'))
-                            last_active = date_obj.strftime('%d.%m.%Y %H:%M')
-                except:
-                    pass
+        total_pages = (total + USERS_PAGE_SIZE - 1) // USERS_PAGE_SIZE
+        page = max(0, min(page, total_pages - 1))
+        context.user_data["admin_users_page"] = page
 
-                text += f"{i}. @{escape_html(username)} (ID: {user_id})\n   Активен: {last_active}\n\n"
+        start = page * USERS_PAGE_SIZE
+        end = start + USERS_PAGE_SIZE
+        users_page = visible_users[start:end]
 
-            if total > 20:
-                text += f"\n... и еще {total - 20} пользователей"
+        text_lines = [
+            "👥 <b>Список пользователей</b>",
+            "",
+            f"Всего: {total}",
+            f"Страница: {page + 1}/{total_pages}",
+            "",
+        ]
 
-        kbd = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Обновить", callback_data="admin_users_list")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_ADMIN_USERS)]
-        ])
+        for index, user in enumerate(users_page, start=start + 1):
+            username = display_username(user.get("username"))
+            user_id = user.get("user_id", "N/A")
+            last_active = format_timestamp(user.get("last_active"))
+            default_query = user.get("default_query") or "не установлено"
+            default_mode = user.get("default_mode") or "не выбран"
+            mode_text = "студента" if default_mode == "student" else ("преподавателя" if default_mode == "teacher" else default_mode)
+
+            username_display = (
+                f"@{escape_html(username)}" if username != "без username" else "без username"
+            )
+            line = (
+                f"{index}. {username_display} (ID: {user_id})\n"
+                f"   📌 По умолчанию: {escape_html(default_query)} ({mode_text})\n"
+                f"   🕒 Активность: {last_active}\n"
+            )
+            text_lines.append(line)
+
+        if root_id:
+            text_lines.append("ℹ️ Главный администратор скрыт из списка.")
+
+        text = "\n".join(text_lines)
+
+        kbd_rows = []
+        for user in users_page:
+            user_id = user.get("user_id")
+            if user_id is None:
+                continue
+            username = display_username(user.get("username"))
+            label = f"@{username} · {user_id}" if username != "без username" else f"без username · {user_id}"
+            if len(label) > 60:
+                label = label[:57] + "..."
+            kbd_rows.append([
+                InlineKeyboardButton(
+                    label,
+                    callback_data=f"{CALLBACK_ADMIN_USER_DETAILS_PREFIX}{user_id}",
+                )
+            ])
+
+        nav_row = []
+        if page > 0:
+            nav_row.append(
+                InlineKeyboardButton(
+                    "⬅️ Назад",
+                    callback_data=f"{CALLBACK_ADMIN_USERS_PAGE_PREFIX}{page - 1}",
+                )
+            )
+        nav_row.append(
+            InlineKeyboardButton(
+                "🔄 Обновить",
+                callback_data=f"{CALLBACK_ADMIN_USERS_PAGE_PREFIX}{page}",
+            )
+        )
+        if page < total_pages - 1:
+            nav_row.append(
+                InlineKeyboardButton(
+                    "➡️ Далее",
+                    callback_data=f"{CALLBACK_ADMIN_USERS_PAGE_PREFIX}{page + 1}",
+                )
+            )
+        if nav_row:
+            kbd_rows.append(nav_row)
+
+        kbd_rows.append(
+            [InlineKeyboardButton("⬅️ Меню", callback_data=CALLBACK_ADMIN_USERS)]
+        )
+
+        kbd = InlineKeyboardMarkup(kbd_rows)
 
         await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
         await update.callback_query.answer()
     except Exception as e:
         logger.error(f"Ошибка при получении списка пользователей: {e}", exc_info=True)
         await update.callback_query.answer("❌ Ошибка при получении списка", show_alert=True)
+
+async def admin_user_details_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+):
+    """Детальная информация о пользователе"""
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        return
+
+    if is_root_admin(user_id) and not is_root_admin(update.effective_user.id):
+        await update.callback_query.answer("Недоступно для просмотра.", show_alert=True)
+        return
+
+    user = db.get_user(user_id)
+    if not user:
+        await update.callback_query.answer("Пользователь не найден.", show_alert=True)
+        return
+
+    username = display_username(user.get("username"))
+    default_query = user.get("default_query") or "не установлено"
+    default_mode = user.get("default_mode") or "не выбран"
+    mode_text = "Студент" if default_mode == "student" else ("Преподаватель" if default_mode == "teacher" else default_mode)
+    notifications_enabled = bool(user.get("daily_notifications"))
+    notification_time = user.get("notification_time") or "21:00"
+    last_active = format_timestamp(user.get("last_active"))
+    created_at = format_timestamp(user.get("created_at"))
+
+    history = db.get_user_activity(user_id, limit=5)
+
+    username_display = (
+        f"@{escape_html(username)}" if username != "без username" else "без username"
+    )
+    text_lines = [
+        "👤 <b>Профиль пользователя</b>",
+        "",
+        f"ID: <code>{user_id}</code>",
+        f"Username: {username_display}",
+        f"Создан: {created_at}",
+        f"Последняя активность: {last_active}",
+        "",
+        f"📌 По умолчанию: <b>{escape_html(default_query)}</b>",
+        f"Режим: {escape_html(mode_text)}",
+        "",
+        f"🔔 Уведомления: {'включены' if notifications_enabled else 'выключены'}",
+        f"Время уведомлений: {notification_time}",
+        "",
+    ]
+
+    if username == "без username":
+        text_lines.append("ℹ️ Пользователь скрывает свой username в Telegram.")
+        text_lines.append("")
+
+    if history:
+        text_lines.append("📝 <b>Последние действия:</b>")
+        for entry in history:
+            timestamp = format_timestamp(entry.get("timestamp"))
+            action = entry.get("action") or "действие"
+            action_label = escape_html(action.replace("_", " ").capitalize())
+            details = entry.get("details")
+            if details:
+                details = details.strip()
+                if len(details) > 80:
+                    details = details[:77] + "…"
+                details = escape_html(details)
+                text_lines.append(f"   • {timestamp}: {action_label}\n     <i>{details}</i>")
+            else:
+                text_lines.append(f"   • {timestamp}: {action_label}")
+    else:
+        text_lines.append("📝 История действий отсутствует.")
+
+    text = "\n".join(text_lines)
+
+    back_page = context.user_data.get("admin_users_page", 0)
+    kbd_rows = [
+        [InlineKeyboardButton("🔄 Обновить", callback_data=f"{CALLBACK_ADMIN_USER_DETAILS_PREFIX}{user_id}")],
+        [InlineKeyboardButton("⬅️ К списку", callback_data=f"{CALLBACK_ADMIN_USERS_PAGE_PREFIX}{back_page}")],
+    ]
+    if username != "без username":
+        kbd_rows.append(
+            [InlineKeyboardButton("✉️ Открыть чат", url=f"https://t.me/{username}")]
+        )
+    kbd_rows.append(
+        [InlineKeyboardButton("⬅️ Меню", callback_data=CALLBACK_ADMIN_USERS)]
+    )
+
+    kbd = InlineKeyboardMarkup(kbd_rows)
+
+    await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+    await update.callback_query.answer()
 
 async def admin_users_search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Поиск пользователя"""
@@ -536,21 +732,35 @@ async def admin_list_admins_callback(update: Update, context: ContextTypes.DEFAU
         return
 
     admins = admin_db.get_all_admins()
+    root_id = get_root_admin_id()
+    visible_admins = [admin for admin in admins if admin.get("user_id") != root_id]
 
-    if not admins:
-        text = "👨‍💼 <b>Администраторы</b>\n\nСписок пуст."
+    if not visible_admins:
+        text = (
+            "👨‍💼 <b>Администраторы</b>\n\n"
+            "Сейчас нет дополнительных администраторов."
+        )
     else:
-        text = f"👨‍💼 <b>Администраторы</b> ({len(admins)}):\n\n"
-        for i, admin in enumerate(admins, 1):
-            username = admin.get('username', 'без username')
+        text = f"👨‍💼 <b>Администраторы</b> ({len(visible_admins)}):\n\n"
+        for i, admin in enumerate(visible_admins, 1):
+            username = display_username(admin.get("username"))
             added_at = admin.get('added_at', 'неизвестно')
             try:
-                if 'T' in added_at:
+                if isinstance(added_at, str) and 'T' in added_at:
                     date_obj = datetime.fromisoformat(added_at.replace('Z', '+00:00'))
                     added_at = date_obj.strftime('%d.%m.%Y')
-            except:
+            except Exception:
                 pass
-            text += f"{i}. @{escape_html(username)} (ID: {admin['user_id']})\n   Добавлен: {added_at}\n\n"
+            username_display = (
+                f"@{escape_html(username)}" if username != "без username" else "без username"
+            )
+            text += (
+                f"{i}. {username_display} (ID: {admin['user_id']})\n"
+                f"   Добавлен: {added_at}\n\n"
+            )
+
+    if root_id:
+        text += "ℹ️ Главный администратор скрыт из списка и не может быть удалён.\n"
 
     kbd = InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Добавить админа", callback_data=CALLBACK_ADMIN_ADD_ADMIN)],
@@ -657,6 +867,8 @@ async def handle_remove_admin_id_input(update: Update, context: ContextTypes.DEF
         # Нельзя удалить самого себя
         if admin_id == update.effective_user.id:
             text = "❌ Вы не можете удалить самого себя."
+        elif is_root_admin(admin_id):
+            text = "❌ Нельзя удалить главного администратора."
         elif admin_db.remove_admin(admin_id):
             context.user_data.pop('awaiting_remove_admin_id', None)
             text = f"✅ Администратор {admin_id} удален."
