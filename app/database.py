@@ -237,6 +237,29 @@ class UserDatabase:
             logger.error(f"Ошибка получения списка user_id: {e}", exc_info=True)
             return []
 
+    def get_user_activity(self, user_id: int, limit: int = 10) -> list:
+        """Получить историю активности пользователя"""
+        try:
+            conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT action, details, timestamp
+                FROM activity_log
+                WHERE user_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            ''', (user_id, limit))
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка получения активности пользователя {user_id}: {e}", exc_info=True)
+            return []
+
     def delete_user(self, user_id: int):
         """Удалить пользователя из базы данных"""
         try:
