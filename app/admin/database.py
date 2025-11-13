@@ -14,7 +14,14 @@ logger = logging.getLogger(__name__)
 try:
     from ..database import DB_PATH as USERS_DB_PATH
 except Exception:
-    USERS_DB_PATH = Path(os.getenv("USERS_DB_PATH", "users.db")).expanduser()
+    _db_path_env = os.getenv("USERS_DB_PATH")
+    _db_dir_env = os.getenv("USERS_DB_DIR")
+    if _db_path_env:
+        USERS_DB_PATH = Path(_db_path_env).expanduser()
+    elif _db_dir_env:
+        USERS_DB_PATH = Path(_db_dir_env).expanduser() / "users.db"
+    else:
+        USERS_DB_PATH = Path("/data/users.db")
 
 DB_PATH = USERS_DB_PATH
 

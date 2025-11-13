@@ -2,6 +2,7 @@
 Модуль для работы с базой данных пользователей
 Использует SQLite для хранения данных пользователей
 """
+import os
 import sqlite3
 import logging
 from typing import Optional, Dict, Any
@@ -10,13 +11,29 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path("users.db")
+DEFAULT_DB_PATH = "/data/users.db"
+DB_PATH: Path
+
+_db_path_env = os.getenv("USERS_DB_PATH")
+_db_dir_env = os.getenv("USERS_DB_DIR")
+
+if _db_path_env:
+    DB_PATH = Path(_db_path_env).expanduser()
+elif _db_dir_env:
+    DB_PATH = Path(_db_dir_env).expanduser() / "users.db"
+else:
+    DB_PATH = Path(DEFAULT_DB_PATH)
 
 class UserDatabase:
     """Класс для работы с базой данных пользователей"""
 
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            logger.warning(f"Не удалось создать директорию для БД {self.db_path.parent}: {exc}")
+        logger.info(f"Используется файл базы данных: {self.db_path}")
         self._init_database()
 
     def _init_database(self):
