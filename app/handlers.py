@@ -2022,12 +2022,33 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chosen = options[idx]
                     user_data.pop(f"default_options_{mode}", None)
                     user_data.pop(CTX_AWAITING_DEFAULT_QUERY, None)
+                    
+                    # Проверяем, новый ли это пользователь (первый запуск)
+                    is_new_user = user_data.get(CTX_DEFAULT_QUERY) is None
+                    
                     await _apply_default_selection(update, context, chosen, mode, source="callback")
-                    await safe_edit_message_text(
-                        update.callback_query,
-                        f"✅ Установлено по умолчанию: <b>{escape_html(chosen)}</b>",
-                        parse_mode=ParseMode.HTML
-                    )
+                    
+                    if is_new_user:
+                        # Для новых пользователей показываем сообщение об успешной установке
+                        mode_text = "группу" if mode == "student" else "преподавателя"
+                        await safe_edit_message_text(
+                            update.callback_query,
+                            f"✅ Вы установили {mode_text}: <b>{escape_html(chosen)}</b>",
+                            parse_mode=ParseMode.HTML
+                        )
+                        # Удаляем сообщение через 3 секунды и показываем главное меню
+                        await asyncio.sleep(3.0)
+                        try:
+                            await update.callback_query.message.delete()
+                        except Exception:
+                            pass
+                        await start_command(update, context)
+                    else:
+                        await safe_edit_message_text(
+                            update.callback_query,
+                            f"✅ Установлено по умолчанию: <b>{escape_html(chosen)}</b>",
+                            parse_mode=ParseMode.HTML
+                        )
                 else:
                     await safe_edit_message_text(update.callback_query, "Не удалось определить выбранный вариант.")
             await settings_menu_callback(update, context)
