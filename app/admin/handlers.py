@@ -49,7 +49,7 @@ CALLBACK_ADMIN_LIST_ADMINS = "admin_list_admins"
 CALLBACK_ADMIN_CONFIRM_TOGGLE = "admin_confirm_toggle"
 CALLBACK_ADMIN_CANCEL_TOGGLE = "admin_cancel_toggle"
 
-USERS_PAGE_SIZE = 10
+USERS_PAGE_SIZE = 5  # Уменьшено для удобства навигации
 
 def format_timestamp(value: Optional[str]) -> str:
     """Приводит ISO-дату к читаемому виду"""
@@ -412,52 +412,59 @@ async def admin_users_list_callback(
         text_lines = [
             "👥 <b>Список пользователей</b>",
             "",
-            f"Всего: {total}",
-            f"Страница: {page + 1}/{total_pages}",
+            f"Всего: {total} | Страница: {page + 1}/{total_pages}",
             "",
         ]
 
+        # Компактный формат отображения
         for index, user in enumerate(users_page, start=start + 1):
             username = display_username(user.get("username"))
             user_id = user.get("user_id", "N/A")
             last_active = format_timestamp(user.get("last_active"))
-            default_query = user.get("default_query") or "не установлено"
-            default_mode = user.get("default_mode") or "не выбран"
-            mode_text = "студента" if default_mode == "student" else ("преподавателя" if default_mode == "teacher" else default_mode)
-
+            default_query = user.get("default_query")
+            
             username_display = (
                 f"@{escape_html(username)}" if username != "без username" else "без username"
             )
-            line = (
-                f"{index}. {username_display} (ID: {user_id})\n"
-                f"   📌 По умолчанию: {escape_html(default_query)} ({mode_text})\n"
-                f"   🕒 Активность: {last_active}\n"
-            )
+            
+            # Компактная строка: номер, имя, ID, группа (если есть), активность
+            if default_query:
+                default_mode = user.get("default_mode") or ""
+                mode_emoji = "🎓" if default_mode == "student" else "🧑‍🏫" if default_mode == "teacher" else ""
+                line = f"{index}. {username_display} (ID: {user_id}) {mode_emoji} {escape_html(default_query[:20])}{'...' if len(default_query) > 20 else ''} | {last_active}"
+            else:
+                line = f"{index}. {username_display} (ID: {user_id}) | {last_active}"
+            
             text_lines.append(line)
 
         if root_id:
+            text_lines.append("")
             text_lines.append("ℹ️ Главный администратор скрыт из списка.")
 
         text = "\n".join(text_lines)
 
+        # Компактные кнопки: две кнопки в одной строке
         kbd_rows = []
         for user in users_page:
             user_id = user.get("user_id")
             if user_id is None:
                 continue
             username = display_username(user.get("username"))
-            label = f"@{username} · {user_id}" if username != "без username" else f"без username · {user_id}"
-            if len(label) > 60:
-                label = label[:57] + "..."
+            
+            # Компактная метка для кнопки
+            if username != "без username":
+                label = f"👤 {username[:15]}{'...' if len(username) > 15 else ''}"
+            else:
+                label = f"👤 ID: {user_id}"
+            
+            # Две кнопки в одной строке: детали и написать
             kbd_rows.append([
                 InlineKeyboardButton(
                     label,
                     callback_data=f"{CALLBACK_ADMIN_USER_DETAILS_PREFIX}{user_id}",
-                )
-            ])
-            kbd_rows.append([
+                ),
                 InlineKeyboardButton(
-                    "✉️ Написать сообщение",
+                    "✉️",
                     callback_data=f"{CALLBACK_ADMIN_MESSAGE_USER_PREFIX}{user_id}",
                 )
             ])
