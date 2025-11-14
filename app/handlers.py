@@ -2037,11 +2037,10 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             parse_mode=ParseMode.HTML
                         )
                         # Удаляем сообщение через 3 секунды и показываем главное меню
-                        await asyncio.sleep(3.0)
-                        try:
-                            await update.callback_query.message.delete()
-                        except Exception:
-                            pass
+                        msg_to_delete = update.callback_query.message
+                        asyncio.create_task(_delete_message_after_delay(context.bot, msg_to_delete.chat_id, msg_to_delete.message_id, 3.0))
+                        # Показываем главное меню через 3.5 секунды (после удаления сообщения)
+                        await asyncio.sleep(3.5)
                         await start_command(update, context)
                     else:
                         await safe_edit_message_text(
