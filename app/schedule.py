@@ -78,7 +78,9 @@ async def get_schedule(date_str: str, query_value: str, entity_type: Literal["Gr
     except Exception as e:
         return None, f"Не удалось получить данные после нескольких попыток: {e}"
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    # Получаем текст из response (может быть из кеша или свежий)
+    html_text = response.text if hasattr(response, 'text') and response.text else str(response.content, 'utf-8', errors='ignore')
+    soup = BeautifulSoup(html_text, "html.parser")
     # Ищем div с margin-bottom: 25px (с точкой с запятой или без)
     days_html = soup.find_all("div", style=lambda x: x and "margin-bottom: 25px" in x)
     if not days_html:
@@ -90,19 +92,19 @@ async def get_schedule(date_str: str, query_value: str, entity_type: Literal["Gr
     pages: List[str] = []
     for day_div in days_html:
         try:
-            date_header = day_div.find("strong")
-            day_date_str = date_header.text.strip() if date_header else "Неизвестная дата"
+        date_header = day_div.find("strong")
+        day_date_str = date_header.text.strip() if date_header else "Неизвестная дата"
 
             # УБИРАЕМ СТРОГУЮ ФИЛЬТРАЦИЮ ПО ДАТЕ - обрабатываем все дни, которые вернул API
             # Это позволяет создавать несколько страниц для листания
             # Если запрошена конкретная дата, API все равно может вернуть несколько дней
 
-            weekday_divs = day_div.find_all("div")
-            weekday = weekday_divs[1].text.strip() if len(weekday_divs) > 1 else ""
-            pairs_html = day_div.find_all("tr")
+        weekday_divs = day_div.find_all("div")
+        weekday = weekday_divs[1].text.strip() if len(weekday_divs) > 1 else ""
+        pairs_html = day_div.find_all("tr")
 
             # Пропускаем дни без пар
-            if not pairs_html:
+        if not pairs_html:
                 continue
 
             # Проверяем, есть ли реальные пары (не пустые строки)
@@ -125,74 +127,74 @@ async def get_schedule(date_str: str, query_value: str, entity_type: Literal["Gr
                 continue
 
             day_text = f"<b>{day_date_str} ({weekday})</b>:\n\n"
-            last_time_value = ""
-            last_counted_time = ""
-            pair_counter = 0
+        last_time_value = ""
+        last_counted_time = ""
+        pair_counter = 0
 
-            for pair_tr in pairs_html:
+        for pair_tr in pairs_html:
                 try:
-                    tds = pair_tr.find_all("td")
-                    if not tds:
-                        continue
+            tds = pair_tr.find_all("td")
+            if not tds:
+                continue
 
-                    if len(tds) == 1:
-                        time = last_time_value or "-"
-                        content_td = tds[0]
-                        extra_td = None
-                    else:
+            if len(tds) == 1:
+                time = last_time_value or "-"
+                content_td = tds[0]
+                extra_td = None
+            else:
                         time_candidate = tds[0].text.strip() if len(tds) > 0 else ""
-                        if time_candidate:
-                            last_time_value = time_candidate
-                        time = last_time_value or time_candidate or "-"
+                if time_candidate:
+                    last_time_value = time_candidate
+                time = last_time_value or time_candidate or "-"
                         content_td = tds[1] if len(tds) > 1 else tds[0]
-                        extra_td = tds[2] if len(tds) > 2 else None
+                extra_td = tds[2] if len(tds) > 2 else None
 
-                    if time and time != last_counted_time:
-                        pair_counter += 1
-                        last_counted_time = time
+            if time and time != last_counted_time:
+                pair_counter += 1
+                last_counted_time = time
 
                     try:
-                        details_lines = [line.strip() for line in content_td.text.strip().split("\n") if line.strip()]
-                        subject = re.sub(SUBGROUP_PATTERN, r"\1 \2", details_lines[0] if details_lines else "-")
+            details_lines = [line.strip() for line in content_td.text.strip().split("\n") if line.strip()]
+            subject = re.sub(SUBGROUP_PATTERN, r"\1 \2", details_lines[0] if details_lines else "-")
                     except Exception as e:
                         logger.warning(f"Ошибка при обработке предмета: {e}")
                         subject = "-"
 
-                    auditorium_link = "-"
+            auditorium_link = "-"
                     try:
-                        auditorium_a = pair_tr.find("a", href=lambda href: href and "map/rasp?auditory=" in href)
-                        if auditorium_a and auditorium_a.has_attr('href'):
-                            href = auditorium_a['href']
-                            full_href = f"https://vgltu.ru{href}" if not href.startswith('http') else href
-                            auditorium_link = f'<a href="{full_href}">{auditorium_a.text.strip()}</a>'
-                        elif extra_td is not None and extra_td.text.strip():
-                            text = extra_td.text.strip()
-                            auditorium_link = f'<a href="https://vgltu.ru/map/rasp?auditory={quote(text)}">{text}</a>'
+            auditorium_a = pair_tr.find("a", href=lambda href: href and "map/rasp?auditory=" in href)
+            if auditorium_a and auditorium_a.has_attr('href'):
+                href = auditorium_a['href']
+                full_href = f"https://vgltu.ru{href}" if not href.startswith('http') else href
+                auditorium_link = f'<a href="{full_href}">{auditorium_a.text.strip()}</a>'
+            elif extra_td is not None and extra_td.text.strip():
+                text = extra_td.text.strip()
+                auditorium_link = f'<a href="https://vgltu.ru/map/rasp?auditory={quote(text)}">{text}</a>'
                     except Exception as e:
                         logger.warning(f"Ошибка при обработке аудитории: {e}")
 
                     try:
-                        groups = [p.strip() for p in content_td.decode_contents().split("<br/>") if re.fullmatch(GROUP_NAME_PATTERN, p.strip())]
-                        group_names = ", ".join(groups) if groups else "-"
+            groups = [p.strip() for p in content_td.decode_contents().split("<br/>") if re.fullmatch(GROUP_NAME_PATTERN, p.strip())]
+            group_names = ", ".join(groups) if groups else "-"
                     except Exception as e:
                         logger.warning(f"Ошибка при обработке групп: {e}")
                         group_names = "-"
 
-                    idx = pair_counter - 1
-                    pair_emoji = PAIR_EMOJIS[idx] if 0 <= idx < len(PAIR_EMOJIS) else f" {idx+1}."
-                    pair_info = f"{pair_emoji} <b>{time}</b>\n  📖 {subject}\n  📍 {auditorium_link}\n"
+            idx = pair_counter - 1
+            pair_emoji = PAIR_EMOJIS[idx] if 0 <= idx < len(PAIR_EMOJIS) else f" {idx+1}."
+            pair_info = f"{pair_emoji} <b>{time}</b>\n  📖 {subject}\n  📍 {auditorium_link}\n"
 
-                    if entity_type == API_TYPE_GROUP and len(details_lines) > 1:
+            if entity_type == API_TYPE_GROUP and len(details_lines) > 1:
                         try:
-                            last_line = details_lines[-1]
-                            if last_line != subject and not re.fullmatch(GROUP_NAME_PATTERN, last_line):
-                                pair_info += f"  👤 {last_line}\n"
+                last_line = details_lines[-1]
+                if last_line != subject and not re.fullmatch(GROUP_NAME_PATTERN, last_line):
+                    pair_info += f"  👤 {last_line}\n"
                         except Exception as e:
                             logger.warning(f"Ошибка при обработке преподавателя: {e}")
-                    if group_names != "-":
-                        pair_info += f"  👥 {group_names}\n"
+            if group_names != "-":
+                pair_info += f"  👥 {group_names}\n"
 
-                    day_text += pair_info + "\n——————————————————————————\n"
+            day_text += pair_info + "\n——————————————————————————\n"
                 except Exception as e:
                     logger.error(f"Ошибка при обработке пары: {e}", exc_info=True)
                     continue
@@ -297,11 +299,11 @@ async def get_schedule_structured(date_str: str, query_value: str, entity_type: 
             weekday = weekday_divs[1].text.strip() if len(weekday_divs) > 1 else ""
         elif len(days_html) == 1:
             logger.debug(f"⚠️ Используем единственный день из ответа: {date_str}")
-            day_div = days_html[0]
-            date_header = day_div.find("strong")
-            day_date_str = date_header.text.strip() if date_header else "Неизвестная дата"
-            weekday_divs = day_div.find_all("div")
-            weekday = weekday_divs[1].text.strip() if len(weekday_divs) > 1 else ""
+    day_div = days_html[0]
+    date_header = day_div.find("strong")
+    day_date_str = date_header.text.strip() if date_header else "Неизвестная дата"
+    weekday_divs = day_div.find_all("div")
+    weekday = weekday_divs[1].text.strip() if len(weekday_divs) > 1 else ""
         else:
             logger.debug(f"⚠️ Не найден подходящий день для {date_str}. Возвращаем пустое расписание.")
             return None, None
@@ -406,7 +408,7 @@ async def search_entities(query: str, entity_type: Literal["Group", "Teacher"]) 
 
         # Пытаемся получить JSON
         try:
-            entities = response.json()
+        entities = response.json()
         except ValueError as e:
             logger.error(f"Ошибка парсинга JSON: {e}, response text: {response.text[:200]}")
             return None, "Ошибка: Сервер вернул данные в неожиданном формате."
@@ -419,7 +421,7 @@ async def search_entities(query: str, entity_type: Literal["Group", "Teacher"]) 
         # Проверяем, что все элементы - строки
         if not all(isinstance(item, str) for item in entities):
             logger.error("Не все элементы списка являются строками")
-            return None, "Ошибка: Сервер вернул данные в неожиданном формате."
+        return None, "Ошибка: Сервер вернул данные в неожиданном формате."
 
         # Фильтруем результаты
         filtered = [e for e in entities if query.lower() in e.lower()]

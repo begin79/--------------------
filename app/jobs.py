@@ -9,11 +9,9 @@ from telegram.ext import ContextTypes
 from .constants import *
 from .schedule import get_schedule
 from .utils import escape_html, hash_schedule
+from .admin.database import admin_db
 
 logger = logging.getLogger(__name__)
-
-# Временное хранилище хешей
-schedule_snapshots = {}
 
 async def daily_schedule_job(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
@@ -118,7 +116,7 @@ async def check_schedule_changes_job(context: ContextTypes.DEFAULT_TYPE):
                 if err or not pages:
                     continue
                 current_hash = hash_schedule(pages)
-                prev = schedule_snapshots.get(cache_key)
+                prev = admin_db.get_schedule_snapshot(cache_key)
                 if prev and prev != current_hash:
                     date_obj = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
                     date_display = "сегодня" if date_obj == today else "завтра"
@@ -142,7 +140,7 @@ async def check_schedule_changes_job(context: ContextTypes.DEFAULT_TYPE):
                     except Forbidden:
                         logger.warning(f"⚠️ [{user_id}] Пользователь заблокировал бота")
                         context.bot_data['active_users'].discard(user_id)
-                schedule_snapshots[cache_key] = current_hash
+                admin_db.save_schedule_snapshot(cache_key, current_hash)
         except Exception as e:
             logger.error(f"Ошибка при проверке расписания для пользователя {user_id}: {e}")
 

@@ -29,8 +29,23 @@ async def close_http_client():
 
 async def make_request_with_retry(url: str, cache: TTLCache, use_cache: bool = True) -> httpx.Response:
     if use_cache and url in cache:
-        logger.debug(f"Взят из кеша: {url}")  # Изменено с INFO на DEBUG
-        return cache[url]
+        logger.debug(f"Взят из кеша: {url}")
+        # Возвращаем кешированный ответ
+        cached_data = cache[url]
+        if isinstance(cached_data, dict):
+            # Если это словарь (текст), создаем новый Response объект
+            from httpx import Response, Request
+            request = Request("GET", url)
+            content = cached_data.get('content', b'')
+            if isinstance(content, str):
+                content = content.encode('utf-8')
+            response = Response(200, content=content, request=request)
+            # Устанавливаем текст напрямую
+            if 'text' in cached_data:
+                response._text = cached_data['text']
+            return response
+        # Если это старый формат (Response объект), возвращаем как есть
+        return cached_data
 
     client = get_http_client()
     last_exception = None
@@ -40,8 +55,13 @@ async def make_request_with_retry(url: str, cache: TTLCache, use_cache: bool = T
             response = await client.get(url)
             response.raise_for_status()
             if use_cache:
-                cache[url] = response
-            logger.debug(f"Успешный запрос (попытка {attempt + 1}): {url}")  # Изменено с INFO на DEBUG
+                # Кешируем только текст и контент, а не весь Response объект
+                # Это экономит память и позволяет избежать проблем с закрытыми соединениями
+                cache[url] = {
+                    'text': response.text,
+                    'content': response.content
+                }
+            logger.debug(f"Успешный запрос (попытка {attempt + 1}): {url}")
             return response
         except httpx.HTTPStatusError as e:
             # Если это редирект, но мы все равно получили ошибку, пробуем следовать вручную
@@ -59,8 +79,11 @@ async def make_request_with_retry(url: str, cache: TTLCache, use_cache: bool = T
                         response = await client.get(redirect_url)
                         response.raise_for_status()
                         if use_cache:
-                            cache[url] = response
-                        logger.debug(f"Успешный запрос после редиректа: {redirect_url}")  # Изменено с INFO на DEBUG
+                            cache[url] = {
+                                'text': response.text,
+                                'content': response.content
+                            }
+                        logger.debug(f"Успешный запрос после редиректа: {redirect_url}")
                         return response
                     except Exception as redirect_error:
                         logger.warning(f"Ошибка после редиректа: {redirect_error}")

@@ -5,6 +5,8 @@
 import os
 import sqlite3
 import logging
+import threading
+from contextlib import contextmanager
 from typing import Optional, Dict, Any
 from pathlib import Path
 from datetime import datetime
@@ -29,12 +31,37 @@ class UserDatabase:
 
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
+        self._lock = threading.Lock()  # Блокировка для thread-safety
         try:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
             logger.warning(f"Не удалось создать директорию для БД {self.db_path.parent}: {exc}")
         logger.info(f"Используется файл базы данных: {self.db_path}")
         self._init_database()
+
+    @contextmanager
+    def _get_connection(self):
+        """Context manager для безопасной работы с БД"""
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=10.0)
+            conn.row_factory = sqlite3.Row
+            # Настройки производительности
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('PRAGMA synchronous=NORMAL')
+            conn.execute('PRAGMA cache_size=-64000')
+            conn.execute('PRAGMA temp_store=MEMORY')
+            conn.execute('PRAGMA busy_timeout=5000')  # Таймаут для ожидания блокировки
+            yield conn
+            conn.commit()
+        except sqlite3.Error as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"Ошибка БД: {e}", exc_info=True)
+            raise
+        finally:
+            if conn:
+                conn.close()
 
     def _init_database(self):
         """Инициализация базы данных и создание таблиц"""
@@ -80,6 +107,8 @@ class UserDatabase:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_activity_user_id ON activity_log(user_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity_log(timestamp)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_default_query ON users(default_query) WHERE default_query IS NOT NULL')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL')
 
             conn.commit()
             conn.close()
@@ -90,24 +119,18 @@ class UserDatabase:
     def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Получить данные пользователя"""
         try:
-            conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            # Оптимизация: используем только нужные поля вместо SELECT *
-            cursor = conn.cursor()
-
-            cursor.execute('''
-                SELECT user_id, username, first_name, last_name, default_query,
-                       default_mode, daily_notifications, notification_time,
-                       created_at, last_active
-                FROM users WHERE user_id = ?
-            ''', (user_id,))
-
-            row = cursor.fetchone()
-            conn.close()
-
-            if row:
-                return dict(row)
-            return None
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT user_id, username, first_name, last_name, default_query,
+                           default_mode, daily_notifications, notification_time,
+                           created_at, last_active
+                    FROM users WHERE user_id = ?
+                ''', (user_id,))
+                row = cursor.fetchone()
+                if row:
+                    return dict(row)
+                return None
         except Exception as e:
             logger.error(f"Ошибка получения пользователя {user_id}: {e}", exc_info=True)
             return None
@@ -119,78 +142,70 @@ class UserDatabase:
                   notification_time: Optional[str] = None):
         """Сохранить или обновить данные пользователя"""
         try:
-            conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            cursor = conn.cursor()
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                # Проверяем, существует ли пользователь
+                cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
+                exists = cursor.fetchone()
 
-            # Проверяем, существует ли пользователь
-            cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
-            exists = cursor.fetchone()
+                if exists:
+                    # Обновляем существующего пользователя
+                    updates = []
+                    params = []
 
-            if exists:
-                # Обновляем существующего пользователя
-                updates = []
-                params = []
+                    if username is not None:
+                        updates.append("username = ?")
+                        params.append(username)
+                    if first_name is not None:
+                        updates.append("first_name = ?")
+                        params.append(first_name)
+                    if last_name is not None:
+                        updates.append("last_name = ?")
+                        params.append(last_name)
+                    if default_query is not None:
+                        updates.append("default_query = ?")
+                        params.append(default_query)
+                    if default_mode is not None:
+                        updates.append("default_mode = ?")
+                        params.append(default_mode)
+                    if daily_notifications is not None:
+                        updates.append("daily_notifications = ?")
+                        params.append(int(daily_notifications))
+                    if notification_time is not None:
+                        updates.append("notification_time = ?")
+                        params.append(notification_time)
 
-                if username is not None:
-                    updates.append("username = ?")
-                    params.append(username)
-                if first_name is not None:
-                    updates.append("first_name = ?")
-                    params.append(first_name)
-                if last_name is not None:
-                    updates.append("last_name = ?")
-                    params.append(last_name)
-                if default_query is not None:
-                    updates.append("default_query = ?")
-                    params.append(default_query)
-                if default_mode is not None:
-                    updates.append("default_mode = ?")
-                    params.append(default_mode)
-                if daily_notifications is not None:
-                    updates.append("daily_notifications = ?")
-                    params.append(int(daily_notifications))
-                if notification_time is not None:
-                    updates.append("notification_time = ?")
-                    params.append(notification_time)
+                    updates.append("last_active = ?")
+                    params.append(datetime.now().isoformat())
+                    params.append(user_id)
 
-                updates.append("last_active = ?")
-                params.append(datetime.now().isoformat())
-                params.append(user_id)
-
-                if updates:
-                    query = f"UPDATE users SET {', '.join(updates)} WHERE user_id = ?"
-                    cursor.execute(query, params)
-            else:
-                # Создаем нового пользователя
-                cursor.execute('''
-                    INSERT INTO users (user_id, username, first_name, last_name,
-                                     default_query, default_mode, daily_notifications,
-                                     notification_time, created_at, last_active)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (user_id, username, first_name, last_name, default_query, default_mode,
-                      int(daily_notifications) if daily_notifications else 0,
-                      notification_time or '21:00',
-                      datetime.now().isoformat(), datetime.now().isoformat()))
-
-            conn.commit()
-            conn.close()
-            logger.debug(f"Данные пользователя {user_id} сохранены")
+                    if updates:
+                        query = f"UPDATE users SET {', '.join(updates)} WHERE user_id = ?"
+                        cursor.execute(query, params)
+                else:
+                    # Создаем нового пользователя
+                    cursor.execute('''
+                        INSERT INTO users (user_id, username, first_name, last_name,
+                                         default_query, default_mode, daily_notifications,
+                                         notification_time, created_at, last_active)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (user_id, username, first_name, last_name, default_query, default_mode,
+                          int(daily_notifications) if daily_notifications else 0,
+                          notification_time or '21:00',
+                          datetime.now().isoformat(), datetime.now().isoformat()))
+                logger.debug(f"Данные пользователя {user_id} сохранены")
         except Exception as e:
             logger.error(f"Ошибка сохранения пользователя {user_id}: {e}", exc_info=True)
 
     def log_activity(self, user_id: int, action: str, details: Optional[str] = None):
         """Записать действие пользователя в лог"""
         try:
-            conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            cursor = conn.cursor()
-
-            cursor.execute('''
-                INSERT INTO activity_log (user_id, action, details)
-                VALUES (?, ?, ?)
-            ''', (user_id, action, details))
-
-            conn.commit()
-            conn.close()
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO activity_log (user_id, action, details)
+                    VALUES (?, ?, ?)
+                ''', (user_id, action, details))
         except Exception as e:
             # Не логируем ошибки записи активности как критичные - это не должно ломать работу бота
             logger.debug(f"Ошибка записи активности пользователя {user_id}: {e}")
@@ -198,15 +213,11 @@ class UserDatabase:
     def get_all_users(self) -> list:
         """Получить список всех пользователей"""
         try:
-            conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            cursor.execute('SELECT * FROM users ORDER BY last_active DESC')
-            rows = cursor.fetchall()
-            conn.close()
-
-            return [dict(row) for row in rows]
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM users ORDER BY last_active DESC')
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
         except Exception as e:
             logger.error(f"Ошибка получения списка пользователей: {e}", exc_info=True)
             return []
@@ -217,22 +228,19 @@ class UserDatabase:
         Включает пользователей из основной таблицы users и (опционально) user_id из журнала активности.
         """
         try:
-            conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            cursor = conn.cursor()
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                user_ids = set()
 
-            user_ids = set()
-
-            cursor.execute('SELECT user_id FROM users')
-            user_ids.update(row[0] for row in cursor.fetchall() if row and row[0])
-
-            if include_activity_log:
-                cursor.execute('SELECT DISTINCT user_id FROM activity_log WHERE user_id IS NOT NULL')
+                cursor.execute('SELECT user_id FROM users')
                 user_ids.update(row[0] for row in cursor.fetchall() if row and row[0])
 
-            conn.close()
+                if include_activity_log:
+                    cursor.execute('SELECT DISTINCT user_id FROM activity_log WHERE user_id IS NOT NULL')
+                    user_ids.update(row[0] for row in cursor.fetchall() if row and row[0])
 
-            # Возвращаем отсортированный список для предсказуемого порядка обхода
-            return sorted(user_ids)
+                # Возвращаем отсортированный список для предсказуемого порядка обхода
+                return sorted(user_ids)
         except Exception as e:
             logger.error(f"Ошибка получения списка user_id: {e}", exc_info=True)
             return []
@@ -240,22 +248,17 @@ class UserDatabase:
     def get_user_activity(self, user_id: int, limit: int = 10) -> list:
         """Получить историю активности пользователя"""
         try:
-            conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            cursor.execute('''
-                SELECT action, details, timestamp
-                FROM activity_log
-                WHERE user_id = ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-            ''', (user_id, limit))
-
-            rows = cursor.fetchall()
-            conn.close()
-
-            return [dict(row) for row in rows]
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT action, details, timestamp
+                    FROM activity_log
+                    WHERE user_id = ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                ''', (user_id, limit))
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
         except Exception as e:
             logger.error(f"Ошибка получения активности пользователя {user_id}: {e}", exc_info=True)
             return []
@@ -263,21 +266,16 @@ class UserDatabase:
     def get_users_with_default_query(self) -> list:
         """Получить список пользователей с установленными группами/преподавателями"""
         try:
-            conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            cursor.execute('''
-                SELECT user_id, default_query, default_mode, daily_notifications, notification_time
-                FROM users
-                WHERE default_query IS NOT NULL AND default_query != ''
-                  AND default_mode IS NOT NULL AND default_mode != ''
-            ''')
-
-            rows = cursor.fetchall()
-            conn.close()
-
-            return [dict(row) for row in rows]
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT user_id, default_query, default_mode, daily_notifications, notification_time
+                    FROM users
+                    WHERE default_query IS NOT NULL AND default_query != ''
+                      AND default_mode IS NOT NULL AND default_mode != ''
+                ''')
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
         except Exception as e:
             logger.error(f"Ошибка получения пользователей с установленными группами: {e}", exc_info=True)
             return []
@@ -285,15 +283,11 @@ class UserDatabase:
     def delete_user(self, user_id: int):
         """Удалить пользователя из базы данных"""
         try:
-            conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            cursor = conn.cursor()
-
-            cursor.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
-            cursor.execute('DELETE FROM activity_log WHERE user_id = ?', (user_id,))
-
-            conn.commit()
-            conn.close()
-            logger.info(f"Пользователь {user_id} удален из базы данных")
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
+                cursor.execute('DELETE FROM activity_log WHERE user_id = ?', (user_id,))
+                logger.info(f"Пользователь {user_id} удален из базы данных")
         except Exception as e:
             logger.error(f"Ошибка удаления пользователя {user_id}: {e}", exc_info=True)
 

@@ -422,11 +422,11 @@ async def admin_users_list_callback(
             user_id = user.get("user_id", "N/A")
             last_active = format_timestamp(user.get("last_active"))
             default_query = user.get("default_query")
-            
+
             username_display = (
                 f"@{escape_html(username)}" if username != "без username" else "без username"
             )
-            
+
             # Компактная строка: номер, имя, ID, группа (если есть), активность
             if default_query:
                 default_mode = user.get("default_mode") or ""
@@ -434,7 +434,7 @@ async def admin_users_list_callback(
                 line = f"{index}. {username_display} (ID: {user_id}) {mode_emoji} {escape_html(default_query[:20])}{'...' if len(default_query) > 20 else ''} | {last_active}"
             else:
                 line = f"{index}. {username_display} (ID: {user_id}) | {last_active}"
-            
+
             text_lines.append(line)
 
         if root_id:
@@ -450,13 +450,13 @@ async def admin_users_list_callback(
             if user_id is None:
                 continue
             username = display_username(user.get("username"))
-            
+
             # Компактная метка для кнопки
             if username != "без username":
                 label = f"👤 {username[:15]}{'...' if len(username) > 15 else ''}"
             else:
                 label = f"👤 ID: {user_id}"
-            
+
             # Две кнопки в одной строке: детали и написать
             kbd_rows.append([
                 InlineKeyboardButton(
