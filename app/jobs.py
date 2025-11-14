@@ -22,9 +22,8 @@ async def daily_schedule_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"🔔 [{chat_id}] → Ежедневное уведомление для {mode_text} '{query}'")
 
     today = datetime.date.today()
-    # Используем функцию для получения следующего рабочего дня
-    from .utils import get_next_weekday
-    target_day = get_next_weekday(today)
+    # Отправляем расписание на завтра (сегодня + 1 день), независимо от выходных
+    target_day = today + datetime.timedelta(days=1)
     api_type = API_TYPE_GROUP if job.data["mode"] == "student" else API_TYPE_TEACHER
     # Используем таймаут для уведомлений, чтобы не блокировать другие задачи
     try:
