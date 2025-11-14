@@ -299,11 +299,11 @@ async def get_schedule_structured(date_str: str, query_value: str, entity_type: 
             weekday = weekday_divs[1].text.strip() if len(weekday_divs) > 1 else ""
         elif len(days_html) == 1:
             logger.debug(f"⚠️ Используем единственный день из ответа: {date_str}")
-    day_div = days_html[0]
-    date_header = day_div.find("strong")
-    day_date_str = date_header.text.strip() if date_header else "Неизвестная дата"
-    weekday_divs = day_div.find_all("div")
-    weekday = weekday_divs[1].text.strip() if len(weekday_divs) > 1 else ""
+            day_div = days_html[0]
+            date_header = day_div.find("strong")
+            day_date_str = date_header.text.strip() if date_header else "Неизвестная дата"
+            weekday_divs = day_div.find_all("div")
+            weekday = weekday_divs[1].text.strip() if len(weekday_divs) > 1 else ""
         else:
             logger.debug(f"⚠️ Не найден подходящий день для {date_str}. Возвращаем пустое расписание.")
             return None, None
