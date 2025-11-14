@@ -484,34 +484,43 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     default_query = context.user_data.get(CTX_DEFAULT_QUERY)
     default_mode = context.user_data.get(CTX_DEFAULT_MODE)
 
-    text = "👋 Привет! Я бот для получения расписания ВГЛТУ 📅\n\n"
+    # Для новых пользователей без установленной группы показываем выбор режима
+    if is_first_time and not default_query:
+        text = "👋 Привет! Я бот для получения расписания ВГЛТУ 📅\n\n"
+        text += "Кто вы?"
+        
+        keyboard_rows = [
+            [InlineKeyboardButton("🎓 Студент", callback_data=CALLBACK_DATA_MODE_STUDENT)],
+            [InlineKeyboardButton("🧑‍🏫 Преподаватель", callback_data=CALLBACK_DATA_MODE_TEACHER)]
+        ]
+    else:
+        text = "👋 Привет! Я бот для получения расписания ВГЛТУ 📅\n\n"
+        keyboard_rows = []
 
-    keyboard_rows = []
+        # Если есть расписание по умолчанию, показываем быстрый доступ
+        if default_query and default_mode:
+            text += f"📌 Ваше расписание: <b>{escape_html(default_query)}</b>\n\n"
+            # Быстрые кнопки для расписания по умолчанию
+            keyboard_rows.append([
+                InlineKeyboardButton("📅 Сегодня", callback_data=f"{CALLBACK_DATA_DATE_TODAY}_quick_{default_mode}"),
+                InlineKeyboardButton("📅 Завтра", callback_data=f"{CALLBACK_DATA_DATE_TOMORROW}_quick_{default_mode}")
+            ])
+            keyboard_rows.append([
+                InlineKeyboardButton(
+                    f"📋 Все расписание ({default_query[:18]}{'...' if len(default_query) > 18 else ''})",
+                    callback_data=f"quick_schedule_{default_mode}"
+                )
+            ])
+            keyboard_rows.append([])  # Пустая строка для разделения
 
-    # Если есть расписание по умолчанию, показываем быстрый доступ
-    if default_query and default_mode:
-        text += f"📌 Ваше расписание: <b>{escape_html(default_query)}</b>\n\n"
-        # Быстрые кнопки для расписания по умолчанию
-        keyboard_rows.append([
-            InlineKeyboardButton("📅 Сегодня", callback_data=f"{CALLBACK_DATA_DATE_TODAY}_quick_{default_mode}"),
-            InlineKeyboardButton("📅 Завтра", callback_data=f"{CALLBACK_DATA_DATE_TOMORROW}_quick_{default_mode}")
+        text += "Выберите режим или перейдите в настройки:"
+
+        keyboard_rows.extend([
+            [InlineKeyboardButton("🎓 Студента", callback_data=CALLBACK_DATA_MODE_STUDENT)],
+            [InlineKeyboardButton("🧑‍🏫 Преподавателя", callback_data=CALLBACK_DATA_MODE_TEACHER)],
+            [InlineKeyboardButton("⚙️ Настройки", callback_data=CALLBACK_DATA_SETTINGS_MENU)],
+            [InlineKeyboardButton("ℹ️ Помощь", callback_data=CallbackData.HELP_COMMAND_INLINE.value)]
         ])
-        keyboard_rows.append([
-            InlineKeyboardButton(
-                f"📋 Все расписание ({default_query[:18]}{'...' if len(default_query) > 18 else ''})",
-                callback_data=f"quick_schedule_{default_mode}"
-            )
-        ])
-        keyboard_rows.append([])  # Пустая строка для разделения
-
-    text += "Выберите режим или перейдите в настройки:"
-
-    keyboard_rows.extend([
-        [InlineKeyboardButton("🎓 Студента", callback_data=CALLBACK_DATA_MODE_STUDENT)],
-        [InlineKeyboardButton("🧑‍🏫 Преподавателя", callback_data=CALLBACK_DATA_MODE_TEACHER)],
-        [InlineKeyboardButton("⚙️ Настройки", callback_data=CALLBACK_DATA_SETTINGS_MENU)],
-        [InlineKeyboardButton("ℹ️ Помощь", callback_data=CallbackData.HELP_COMMAND_INLINE.value)]
-    ])
 
     keyboard = InlineKeyboardMarkup(keyboard_rows)
 
@@ -773,8 +782,24 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
         if match:
             logger.info(f"✅ [{user_id}] @{username} → Установлено по умолчанию: '{match}' (режим: {mode_text})")
             user_data.pop(CTX_AWAITING_DEFAULT_QUERY, None)
+            
+            # Проверяем, новый ли это пользователь (первый запуск)
+            is_new_user = user_data.get(CTX_DEFAULT_QUERY) is None
+            
             await _apply_default_selection(update, context, match, mode, source="message")
-            await settings_menu_callback(update, context)
+            
+            if is_new_user:
+                # Для новых пользователей показываем сообщение об успешной установке и главное меню
+                success_msg = await update.message.reply_text(
+                    f"✅ Вы установили {mode_text}: <b>{escape_html(match)}</b>",
+                    parse_mode=ParseMode.HTML
+                )
+                # Удаляем сообщение через 3 секунды
+                asyncio.create_task(_delete_message_after_delay(context.bot, success_msg.chat_id, success_msg.message_id, 3.0))
+                # Показываем главное меню
+                await start_command(update, context)
+            else:
+                await settings_menu_callback(update, context)
             return
 
         # Если точного совпадения нет, предлагаем варианты на выбор кнопками (без текстового списка)
@@ -993,14 +1018,14 @@ async def send_schedule_with_pagination(update: Update, context: ContextTypes.DE
     if idx > 0:
         prev_callback = f"{CALLBACK_DATA_PREV_SCHEDULE_PREFIX}{mode}_{idx-1}"
         nav_row.append(InlineKeyboardButton("⬅️ Назад", callback_data=prev_callback))
-    
+
     refresh_callback = f"{CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX}{mode}_{idx}"
     nav_row.append(InlineKeyboardButton("🔄 Обновить", callback_data=refresh_callback))
-    
+
     if idx < len(pages) - 1:
         next_callback = f"{CALLBACK_DATA_NEXT_SCHEDULE_PREFIX}{mode}_{idx+1}"
         nav_row.append(InlineKeyboardButton("Вперед ➡️", callback_data=next_callback))
-    
+
     kbd_rows = [nav_row] if nav_row else []
 
     # Вторая строка: быстрые действия (Сегодня/Завтра) если есть query
@@ -1146,7 +1171,7 @@ async def handle_quick_date_callback(update: Update, context: ContextTypes.DEFAU
     """Обработка быстрых кнопок 'Сегодня/Завтра' из главного меню или расписания"""
     user_data = context.user_data
     user_id = update.effective_user.id if update.effective_user else None
-    
+
     # Определяем дату
     if "today" in data:
         date = datetime.date.today()
@@ -1154,7 +1179,7 @@ async def handle_quick_date_callback(update: Update, context: ContextTypes.DEFAU
     else:
         date = datetime.date.today() + datetime.timedelta(days=1)
         date_text = "завтра"
-    
+
     # Извлекаем режим из callback_data
     mode = None
     if "_quick_" in data:
@@ -1163,25 +1188,25 @@ async def handle_quick_date_callback(update: Update, context: ContextTypes.DEFAU
         parts = data.split("_", 2)
         if len(parts) >= 3:
             mode = parts[2]
-    
+
     # Если режим не найден, используем сохраненный или дефолтный
     if not mode:
         mode = user_data.get(CTX_MODE) or user_data.get(CTX_DEFAULT_MODE) or "student"
-    
+
     # Получаем query
     query = user_data.get(CTX_LAST_QUERY) or user_data.get(CTX_DEFAULT_QUERY)
-    
+
     if not query:
         await safe_answer_callback_query(update.callback_query, "❌ Не указана группа/преподаватель. Выберите в настройках.", show_alert=True)
         await start_command(update, context)
         return
-    
+
     user_data[CTX_SELECTED_DATE] = date.strftime("%Y-%m-%d")
     user_data[CTX_MODE] = mode
     user_data[CTX_LAST_QUERY] = query
-    
+
     await safe_answer_callback_query(update.callback_query, f"📅 Загружаю расписание на {date_text}...")
-    
+
     # Загружаем расписание
     api_type = API_TYPE_GROUP if mode == "student" else API_TYPE_TEACHER
     set_user_busy(user_data, True)
@@ -1193,7 +1218,7 @@ async def handle_quick_date_callback(update: Update, context: ContextTypes.DEFAU
                 parse_mode=ParseMode.HTML
             )
             return
-        
+
         user_data[CTX_SCHEDULE_PAGES] = pages
         user_data[CTX_CURRENT_PAGE_INDEX] = 0
         await send_schedule_with_pagination(update, context)
@@ -1929,9 +1954,22 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             mode_text = "студента" if mode == "student" else "преподавателя"
             logger.info(f"🎯 [{user_id}] @{username} → Выбран режим: {mode_text}")
             user_data[CTX_MODE] = mode
-            prompt = "🎓 Введите название группы:" if mode == "student" else "🧑‍🏫 Введите ФИО преподавателя:"
-            kbd = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data=CALLBACK_DATA_CANCEL_INPUT)]])
-            await safe_edit_message_text(update.callback_query, prompt, reply_markup=kbd)
+            
+            # Проверяем, новый ли это пользователь (первый запуск без установленной группы)
+            default_query = user_data.get(CTX_DEFAULT_QUERY)
+            is_new_user = default_query is None
+            
+            if is_new_user:
+                # Для новых пользователей запрашиваем ввод группы/преподавателя
+                prompt = "🎓 Введите название вашей группы:" if mode == "student" else "🧑‍🏫 Введите ФИО преподавателя:"
+                user_data[CTX_AWAITING_DEFAULT_QUERY] = True
+                kbd = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data=CALLBACK_DATA_CANCEL_INPUT)]])
+                await safe_edit_message_text(update.callback_query, prompt, reply_markup=kbd)
+            else:
+                # Для существующих пользователей показываем стандартный запрос
+                prompt = "🎓 Введите название группы:" if mode == "student" else "🧑‍🏫 Введите ФИО преподавателя:"
+                kbd = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data=CALLBACK_DATA_CANCEL_INPUT)]])
+                await safe_edit_message_text(update.callback_query, prompt, reply_markup=kbd)
         elif data.startswith("confirm_mode_"):
             # Подтверждение режима при умном холодном старте
             parts = data.replace("confirm_mode_", "").split("_", 1)
