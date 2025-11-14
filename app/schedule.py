@@ -308,6 +308,9 @@ async def get_schedule_structured(date_str: str, query_value: str, entity_type: 
             logger.debug(f"⚠️ Не найден подходящий день для {date_str}. Возвращаем пустое расписание.")
             return None, None
 
+    if day_div is None:
+        return None, None
+
     pairs = []
     pairs_html = day_div.find_all("tr")
 
@@ -408,7 +411,7 @@ async def search_entities(query: str, entity_type: Literal["Group", "Teacher"]) 
 
         # Пытаемся получить JSON
         try:
-        entities = response.json()
+            entities = response.json()
         except ValueError as e:
             logger.error(f"Ошибка парсинга JSON: {e}, response text: {response.text[:200]}")
             return None, "Ошибка: Сервер вернул данные в неожиданном формате."
@@ -421,7 +424,7 @@ async def search_entities(query: str, entity_type: Literal["Group", "Teacher"]) 
         # Проверяем, что все элементы - строки
         if not all(isinstance(item, str) for item in entities):
             logger.error("Не все элементы списка являются строками")
-        return None, "Ошибка: Сервер вернул данные в неожиданном формате."
+            return None, "Ошибка: Сервер вернул данные в неожиданном формате."
 
         # Фильтруем результаты
         filtered = [e for e in entities if query.lower() in e.lower()]
