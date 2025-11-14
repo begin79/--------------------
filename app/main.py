@@ -14,7 +14,7 @@ except ModuleNotFoundError:
     try:
         from .create_config_if_missing import create_config_from_env
         create_config_from_env()
-from .config import TOKEN
+        from .config import TOKEN
     except Exception as e:
         logging.error(f"Не удалось создать config.py: {e}")
         raise ValueError(
