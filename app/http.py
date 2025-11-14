@@ -11,9 +11,9 @@ def get_http_client() -> httpx.AsyncClient:
     global http_client
     if http_client is None:
         # Оптимизированный HTTP клиент с пулом соединений для высокой нагрузки
-        limits = httpx.Limits(max_keepalive_connections=20, max_connections=100)
+        limits = httpx.Limits(max_keepalive_connections=50, max_connections=200)
         http_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(10.0, connect=5.0),
+            timeout=httpx.Timeout(8.0, connect=3.0, read=5.0),  # Уменьшены таймауты для быстрых ответов
             follow_redirects=True,
             limits=limits
             # HTTP/2 отключен, так как требует дополнительный пакет 'h2'

@@ -18,9 +18,9 @@ from .http import make_request_with_retry
 
 logger = logging.getLogger(__name__)
 
-# Увеличенные размеры кешей для работы с большим количеством пользователей
-schedule_cache = TTLCache(maxsize=500, ttl=600)  # Увеличено с 100 до 500
-list_cache = TTLCache(maxsize=50, ttl=3600)  # Увеличено с 10 до 50
+# Оптимизированные размеры кешей для быстрой работы
+schedule_cache = TTLCache(maxsize=1000, ttl=900)  # Увеличено для большего кеширования (15 минут)
+list_cache = TTLCache(maxsize=100, ttl=7200)  # Увеличено для большего кеширования (2 часа)
 
 def parse_date_from_html(day_date_str: str) -> Optional[datetime.date]:
     """

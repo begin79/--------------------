@@ -201,6 +201,38 @@ def build_app() -> Application:
         app.job_queue.run_repeating(
             check_schedule_changes_job, interval=5400, first=60, name="check_schedule_changes"
         )
+    
+    # Инициализация активных пользователей при старте
+    async def initialize_active_users(context: ContextTypes.DEFAULT_TYPE):
+        """Инициализирует список активных пользователей из БД при старте бота"""
+        from .database import db
+        from .constants import CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE, CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME
+        
+        try:
+            users_with_query = db.get_users_with_default_query()
+            if 'active_users' not in context.bot_data:
+                context.bot_data['active_users'] = set()
+            if 'users_data_cache' not in context.bot_data:
+                context.bot_data['users_data_cache'] = {}
+            
+            for user_data in users_with_query:
+                user_id = user_data['user_id']
+                context.bot_data['active_users'].add(user_id)
+                context.bot_data['users_data_cache'][user_id] = {
+                    CTX_DEFAULT_QUERY: user_data['default_query'],
+                    CTX_DEFAULT_MODE: user_data['default_mode'],
+                    CTX_DAILY_NOTIFICATIONS: bool(user_data.get('daily_notifications', False)),
+                    CTX_NOTIFICATION_TIME: user_data.get('notification_time', '21:00')
+                }
+            
+            logger.info(f"✅ Инициализировано {len(context.bot_data['active_users'])} активных пользователей для проверки изменений расписания")
+        except Exception as e:
+            logger.error(f"Ошибка инициализации активных пользователей: {e}", exc_info=True)
+    
+    # Добавляем задачу инициализации при старте (выполнится сразу после запуска)
+    if app.job_queue:
+        app.job_queue.run_once(initialize_active_users, when=0)
+    
     return app
 
 def main() -> None:

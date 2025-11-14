@@ -260,6 +260,28 @@ class UserDatabase:
             logger.error(f"Ошибка получения активности пользователя {user_id}: {e}", exc_info=True)
             return []
 
+    def get_users_with_default_query(self) -> list:
+        """Получить список пользователей с установленными группами/преподавателями"""
+        try:
+            conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT user_id, default_query, default_mode, daily_notifications, notification_time
+                FROM users
+                WHERE default_query IS NOT NULL AND default_query != ''
+                  AND default_mode IS NOT NULL AND default_mode != ''
+            ''')
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка получения пользователей с установленными группами: {e}", exc_info=True)
+            return []
+
     def delete_user(self, user_id: int):
         """Удалить пользователя из базы данных"""
         try:

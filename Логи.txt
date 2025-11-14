@@ -1,0 +1,184 @@
+2025-11-14 14:52:21 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:52:31
+2025-11-14 14:52:31 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:52:41
+2025-11-14 14:52:41 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:53:01
+2025-11-14 14:53:01 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:53:21
+2025-11-14 14:53:21 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:53:41
+2025-11-14 14:53:41 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:53:51
+2025-11-14 14:53:51 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:54:01
+2025-11-14 14:54:01 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:54:21
+2025-11-14 14:54:21 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:54:31
+2025-11-14 14:54:31 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:54:41
+2025-11-14 14:54:41 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:55:01
+2025-11-14 14:55:01 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:55:22
+2025-11-14 14:55:22 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:55:32
+2025-11-14 14:55:32 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:55:52
+2025-11-14 14:55:52 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:56:02
+2025-11-14 14:56:02 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:56:22
+2025-11-14 14:56:22 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:56:42
+2025-11-14 14:56:42 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:57:02
+2025-11-14 14:57:02 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:57:12
+2025-11-14 14:57:12 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:57:32
+2025-11-14 14:57:32 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:57:42
+2025-11-14 14:57:42 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:58:02
+2025-11-14 14:58:02 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:58:22
+2025-11-14 14:58:22 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:58:43
+2025-11-14 14:58:43 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:59:03
+2025-11-14 14:59:03 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:59:13
+2025-11-14 14:59:13 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:59:33
+2025-11-14 14:59:33 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 17:59:53
+2025-11-14 14:59:53 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 18:00:00
+2025-11-14 15:00:00 - apscheduler.executors.default - INFO - Running job "daily_schedule_1003795435 (trigger: cron[day_of_week='sun,mon,tue,wed,thu,fri,sat', hour='15', minute='0', second='0'], next run at: 2025-11-15 15:00:00 UTC)" (scheduled at 2025-11-14 15:00:00+00:00)
+
+14/11/25 18:00:00
+2025-11-14 15:00:00 - app.jobs - INFO - 🔔 [1003795435] → Ежедневное уведомление для группы 'ИС1-227-ОТ'
+
+14/11/25 18:00:00
+2025-11-14 15:00:00 - httpx - INFO - HTTP Request: GET https://kis.vgltu.ru/schedule?date=2025-11-17&group=%D0%98%D0%A11-227-%D0%9E%D0%A2 "HTTP/1.1 200 OK"
+
+14/11/25 18:00:00
+2025-11-14 15:00:00 - app.jobs - INFO - ✅ [1003795435] Уведомление отправлено успешно
+
+14/11/25 18:00:00
+2025-11-14 15:00:00 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/sendMessage "HTTP/1.1 200 OK"
+
+14/11/25 18:00:00
+2025-11-14 15:00:00 - apscheduler.executors.default - INFO - Job "daily_schedule_1003795435 (trigger: cron[day_of_week='sun,mon,tue,wed,thu,fri,sat', hour='15', minute='0', second='0'], next run at: 2025-11-15 15:00:00 UTC)" executed successfully
+
+14/11/25 18:00:03
+2025-11-14 15:00:03 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 18:00:13
+2025-11-14 15:00:13 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 18:00:33
+2025-11-14 15:00:33 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 18:00:53
+2025-11-14 15:00:53 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 18:00:58
+2025-11-14 15:00:58 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 18:00:58
+2025-11-14 15:00:58 - app.handlers - INFO - 🔘 [1003795435] @hacker020106 → Callback: 'back_to_start'
+
+14/11/25 18:00:58
+2025-11-14 15:00:58 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/answerCallbackQuery "HTTP/1.1 200 OK"
+
+14/11/25 18:00:58
+2025-11-14 15:00:58 - app.handlers - INFO - 👤 [1003795435] @hacker020106 (Гера) → Команда /start
+
+14/11/25 18:00:59
+2025-11-14 15:00:59 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/editMessageText "HTTP/1.1 200 OK"
+
+14/11/25 18:01:00
+2025-11-14 15:01:00 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 18:01:00
+2025-11-14 15:01:00 - app.handlers - INFO - 🔘 [1003795435] @hacker020106 → Callback: 'quick_schedule_student'
+
+14/11/25 18:01:01
+2025-11-14 15:01:01 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/answerCallbackQuery "HTTP/1.1 200 OK"
+
+14/11/25 18:01:01
+2025-11-14 15:01:01 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/editMessageText "HTTP/1.1 200 OK"
+
+14/11/25 18:01:01
+2025-11-14 15:01:01 - httpx - INFO - HTTP Request: GET https://kis.vgltu.ru/schedule?date=2025-11-14&group=%D0%98%D0%A11-227-%D0%9E%D0%A2 "HTTP/1.1 200 OK"
+
+14/11/25 18:01:01
+2025-11-14 15:01:01 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/editMessageText "HTTP/1.1 200 OK"
+
+14/11/25 18:01:03
+2025-11-14 15:01:03 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 18:01:03
+2025-11-14 15:01:03 - app.handlers - INFO - 🔘 [1003795435] @hacker020106 → Callback: 'next_student_1'
+
+14/11/25 18:01:04
+2025-11-14 15:01:04 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/answerCallbackQuery "HTTP/1.1 200 OK"
+
+14/11/25 18:01:04
+2025-11-14 15:01:04 - app.handlers - INFO - 📄 [1003795435] @hacker020106 → Навигация: → Вперед (страница 2)
+
+14/11/25 18:01:04
+2025-11-14 15:01:04 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/editMessageText "HTTP/1.1 200 OK"
+
+14/11/25 18:01:14
+2025-11-14 15:01:14 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 18:01:24
+2025-11-14 15:01:24 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"
+
+14/11/25 18:01:31
+2025-11-14 15:01:31 - apscheduler.executors.default - INFO - Running job "check_schedule_changes (trigger: interval[1:30:00], next run at: 2025-11-14 16:31:31 UTC)" (scheduled at 2025-11-14 15:01:31.398822+00:00)
+
+14/11/25 18:01:31
+2025-11-14 15:01:31 - app.jobs - INFO - 🔄 Запущена проверка изменений расписания
+
+14/11/25 18:01:31
+2025-11-14 15:01:31 - app.jobs - INFO - 👥 Проверяю расписание для 0 активных пользователей
+
+14/11/25 18:01:31
+2025-11-14 15:01:31 - apscheduler.executors.default - INFO - Job "check_schedule_changes (trigger: interval[1:30:00], next run at: 2025-11-14 16:31:31 UTC)" executed successfully
+
+14/11/25 18:01:34
+2025-11-14 15:01:34 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s/getUpdates "HTTP/1.1 200 OK"

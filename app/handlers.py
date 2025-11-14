@@ -183,6 +183,22 @@ async def _apply_default_selection(
     chat_id = update.effective_chat.id if update.effective_chat else user_id
     _schedule_daily_notifications(context, chat_id, user_data)
 
+    # Добавляем пользователя в список активных для проверки изменений расписания
+    if user_id:
+        if 'active_users' not in context.bot_data:
+            context.bot_data['active_users'] = set()
+        if 'users_data_cache' not in context.bot_data:
+            context.bot_data['users_data_cache'] = {}
+        
+        context.bot_data['active_users'].add(user_id)
+        # Обновляем кеш данных пользователя для проверки изменений
+        context.bot_data['users_data_cache'][user_id] = {
+            CTX_DEFAULT_QUERY: chosen,
+            CTX_DEFAULT_MODE: mode,
+            CTX_DAILY_NOTIFICATIONS: True,
+            CTX_NOTIFICATION_TIME: user_data.get(CTX_NOTIFICATION_TIME, "21:00")
+        }
+
     time_str = user_data.get(CTX_NOTIFICATION_TIME, "21:00")
     notif_line = (
         f"🔔 Ежедневные уведомления уже были включены на {time_str}."
@@ -315,8 +331,8 @@ async def process_user_reply_to_admin_message(
 
     await update.message.reply_text("✅ Ваш ответ отправлен администратору.")
 
-async def safe_get_schedule(date: str, query: str, api_type: str, timeout: float = 30.0):
-    """Безопасное получение расписания с таймаутом"""
+async def safe_get_schedule(date: str, query: str, api_type: str, timeout: float = 15.0):
+    """Безопасное получение расписания с таймаутом (оптимизировано для быстрых ответов)"""
     try:
         return await asyncio.wait_for(
             get_schedule(date, query, api_type),
@@ -443,6 +459,23 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Сохраняем информацию о пользователе в БД
     save_user_data_to_db(user_id, username, first_name, last_name, context.user_data)
+    
+    # Обновляем кеш активных пользователей, если у пользователя есть установленная группа/преподаватель
+    default_query = context.user_data.get(CTX_DEFAULT_QUERY)
+    default_mode = context.user_data.get(CTX_DEFAULT_MODE)
+    if default_query and default_mode:
+        if 'active_users' not in context.bot_data:
+            context.bot_data['active_users'] = set()
+        if 'users_data_cache' not in context.bot_data:
+            context.bot_data['users_data_cache'] = {}
+        
+        context.bot_data['active_users'].add(user_id)
+        context.bot_data['users_data_cache'][user_id] = {
+            CTX_DEFAULT_QUERY: default_query,
+            CTX_DEFAULT_MODE: default_mode,
+            CTX_DAILY_NOTIFICATIONS: context.user_data.get(CTX_DAILY_NOTIFICATIONS, False),
+            CTX_NOTIFICATION_TIME: context.user_data.get(CTX_NOTIFICATION_TIME, '21:00')
+        }
 
     # Логируем активность
     db.log_activity(user_id, "start_command", f"username={username}")

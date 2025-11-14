@@ -32,7 +32,7 @@ async def daily_schedule_job(context: ContextTypes.DEFAULT_TYPE):
     try:
         pages, err = await asyncio.wait_for(
             get_schedule(target_day.strftime("%Y-%m-%d"), job.data["query"], api_type),
-            timeout=20.0
+            timeout=12.0  # Уменьшен таймаут для быстрых уведомлений
         )
     except asyncio.TimeoutError:
         logger.warning(f"Таймаут при получении расписания для уведомления {job.data['query']}")
@@ -107,7 +107,7 @@ async def check_schedule_changes_job(context: ContextTypes.DEFAULT_TYPE):
                 try:
                     pages, err = await asyncio.wait_for(
                         get_schedule(date_str, default_query, api_type, use_cache=False),
-                        timeout=15.0
+                        timeout=10.0  # Уменьшен таймаут для быстрой проверки
                     )
                 except asyncio.TimeoutError:
                     logger.debug(f"Таймаут при проверке изменений для {user_id}")
