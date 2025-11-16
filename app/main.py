@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, PicklePersistence, ContextTypes, filters, InlineQueryHandler
 from telegram.error import TimedOut, Conflict, NetworkError
@@ -204,9 +204,10 @@ def build_app() -> Application:
 
     # Инициализация активных пользователей при старте
     async def initialize_active_users(context: ContextTypes.DEFAULT_TYPE):
-        """Инициализирует список активных пользователей из БД при старте бота"""
+        """Инициализирует список активных пользователей из БД при старте бота и восстанавливает задачи уведомлений"""
         from .database import db
         from .constants import CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE, CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME
+        from .jobs import daily_schedule_job
 
         try:
             users_with_query = db.get_users_with_default_query()
@@ -215,6 +216,7 @@ def build_app() -> Application:
             if 'users_data_cache' not in context.bot_data:
                 context.bot_data['users_data_cache'] = {}
 
+            restored_jobs = 0
             for user_data in users_with_query:
                 user_id = user_data['user_id']
                 context.bot_data['active_users'].add(user_id)
@@ -224,8 +226,36 @@ def build_app() -> Application:
                     CTX_DAILY_NOTIFICATIONS: bool(user_data.get('daily_notifications', False)),
                     CTX_NOTIFICATION_TIME: user_data.get('notification_time', '21:00')
                 }
+                
+                # Восстанавливаем задачи уведомлений для пользователей с включенными уведомлениями
+                if user_data.get('daily_notifications', False) and user_data.get('default_query') and user_data.get('default_mode'):
+                    try:
+                        time_str = user_data.get('notification_time', '21:00')
+                        hour, minute = map(int, time_str.split(":"))
+                        # МСК (UTC+3) -> UTC: вычитаем 3 часа
+                        utc_hour = (hour - 3) % 24
+                        
+                        job_name = f"daily_schedule_{user_id}"
+                        job_data = {
+                            "query": user_data['default_query'],
+                            "mode": user_data['default_mode']
+                        }
+                        
+                        context.job_queue.run_daily(
+                            daily_schedule_job,
+                            time=time(utc_hour, minute, tzinfo=datetime.timezone.utc),
+                            chat_id=user_id,
+                            name=job_name,
+                            data=job_data,
+                        )
+                        restored_jobs += 1
+                        logger.debug(f"✅ Восстановлена задача уведомлений для пользователя {user_id} на {time_str} (UTC: {utc_hour:02d}:{minute:02d})")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Не удалось восстановить задачу уведомлений для пользователя {user_id}: {e}")
 
             logger.info(f"✅ Инициализировано {len(context.bot_data['active_users'])} активных пользователей для проверки изменений расписания")
+            if restored_jobs > 0:
+                logger.info(f"✅ Восстановлено {restored_jobs} задач ежедневных уведомлений")
         except Exception as e:
             logger.error(f"Ошибка инициализации активных пользователей: {e}", exc_info=True)
 
