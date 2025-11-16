@@ -852,51 +852,51 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
     set_user_busy(user_data, True)
 
     try:
-        if not user_data.get(CTX_MODE):
-            logger.warning(f"⚠️ [{user_id}] @{username} → Попытка поиска без выбора режима")
-            await update.message.reply_text("Сначала выберите режим через /start.")
-            return
+    if not user_data.get(CTX_MODE):
+        logger.warning(f"⚠️ [{user_id}] @{username} → Попытка поиска без выбора режима")
+        await update.message.reply_text("Сначала выберите режим через /start.")
+        return
 
-        mode = user_data[CTX_MODE]
-        mode_text = "группу" if mode == "student" else "преподавателя"
-        logger.info(f"🔍 [{user_id}] @{username} → Ищет {mode_text}: '{text}'")
+    mode = user_data[CTX_MODE]
+    mode_text = "группу" if mode == "student" else "преподавателя"
+    logger.info(f"🔍 [{user_id}] @{username} → Ищет {mode_text}: '{text}'")
 
-        await update.message.reply_chat_action(ChatAction.TYPING)
-        api_type = API_TYPE_GROUP if mode == "student" else API_TYPE_TEACHER
-        p_name, s_name, verb, not_found = ("группы", "группа", "Найдена", "Группы не найдены.") if mode == 'student' else ("преподаватели", "преподаватель", "Найден", "Преподаватели не найдены.")
+    await update.message.reply_chat_action(ChatAction.TYPING)
+    api_type = API_TYPE_GROUP if mode == "student" else API_TYPE_TEACHER
+    p_name, s_name, verb, not_found = ("группы", "группа", "Найдена", "Группы не найдены.") if mode == 'student' else ("преподаватели", "преподаватель", "Найден", "Преподаватели не найдены.")
 
-        found, err = await search_entities(text, api_type)
+    found, err = await search_entities(text, api_type)
 
-        if found:
-            logger.info(f"✅ [{user_id}] Найдено {len(found)} {p_name} для запроса '{text}'")
-            if len(found) == 1:
-                logger.info(f"📅 [{user_id}] Загружаю расписание для: {found[0]}")
-        else:
-            logger.warning(f"❌ [{user_id}] {not_found} для запроса '{text}': {err}")
+    if found:
+        logger.info(f"✅ [{user_id}] Найдено {len(found)} {p_name} для запроса '{text}'")
+        if len(found) == 1:
+            logger.info(f"📅 [{user_id}] Загружаю расписание для: {found[0]}")
+    else:
+        logger.warning(f"❌ [{user_id}] {not_found} для запроса '{text}': {err}")
 
-        if err or not found:
-            suggestion = "Попробуйте ввести более точное название или хотя бы первые 3-4 буквы."
+    if err or not found:
+        suggestion = "Попробуйте ввести более точное название или хотя бы первые 3-4 буквы."
             # Устанавливаем стандартную клавиатуру
             reply_keyboard = get_default_reply_keyboard()
-            await update.message.reply_text(err or f"{not_found} {suggestion}", reply_markup=reply_keyboard)
-            return
+        await update.message.reply_text(err or f"{not_found} {suggestion}", reply_markup=reply_keyboard)
+        return
 
         # Устанавливаем стандартную клавиатуру
         reply_keyboard = get_default_reply_keyboard()
 
-        if len(found) == 1:
-            await update.message.reply_text(
-                f"{verb} {s_name}: {found[0]}.\nЗагружаю...",
-                reply_markup=reply_keyboard
-            )
-            await fetch_and_display_schedule(update, context, found[0])
-        else:
-            kbd = [[KeyboardButton(e)] for e in found[:20]]
-            msg = f"Найдено несколько {p_name}. Выберите вариант:" if len(found) <= 20 else f"Найдено слишком много ({len(found)}). Показаны первые 20:"
-            await update.message.reply_text(
-                msg,
-                reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True, one_time_keyboard=True)
-            )
+    if len(found) == 1:
+        await update.message.reply_text(
+            f"{verb} {s_name}: {found[0]}.\nЗагружаю...",
+            reply_markup=reply_keyboard
+        )
+        await fetch_and_display_schedule(update, context, found[0])
+    else:
+        kbd = [[KeyboardButton(e)] for e in found[:20]]
+        msg = f"Найдено несколько {p_name}. Выберите вариант:" if len(found) <= 20 else f"Найдено слишком много ({len(found)}). Показаны первые 20:"
+        await update.message.reply_text(
+            msg,
+            reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True, one_time_keyboard=True)
+        )
     finally:
         # Снимаем блокировку
         set_user_busy(user_data, False)
@@ -914,12 +914,12 @@ async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAU
     set_user_busy(user_data, True)
 
     try:
-        mode = user_data.get(CTX_MODE)
-        api_type = API_TYPE_GROUP if mode == "student" else API_TYPE_TEACHER
-        date = user_data.setdefault(CTX_SELECTED_DATE, datetime.date.today().strftime("%Y-%m-%d"))
-        user_data[CTX_LAST_QUERY] = query
+    mode = user_data.get(CTX_MODE)
+    api_type = API_TYPE_GROUP if mode == "student" else API_TYPE_TEACHER
+    date = user_data.setdefault(CTX_SELECTED_DATE, datetime.date.today().strftime("%Y-%m-%d"))
+    user_data[CTX_LAST_QUERY] = query
 
-        mode_text = "группы" if mode == "student" else "преподавателя"
+    mode_text = "группы" if mode == "student" else "преподавателя"
         logger.debug(f"📥 [{user_id}] @{username} → Загружаю расписание {mode_text} '{query}' на {date}")
 
         # Показываем индикатор загрузки
@@ -932,36 +932,36 @@ async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAU
 
         pages, err = await safe_get_schedule(date, query, api_type)
 
-        if pages:
+    if pages:
             logger.debug(f"✅ [{user_id}] Получено расписание: {len(pages)} страниц")
-        else:
+    else:
             logger.warning(f"❌ [{user_id}] Ошибка получения расписания: {err}")
 
-        if err or not pages:
+    if err or not pages:
             reply_keyboard = get_default_reply_keyboard()
             target = msg_to_edit or update.effective_message
             if target:
                 await target.reply_text(err or "Не удалось получить расписание.", reply_markup=reply_keyboard)
-            return
+        return
 
-        if "Расписание не найдено" in pages[0]:
-            kbd = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]])
-            target = msg_to_edit or (update.callback_query and update.callback_query.message)
-            if target:
-                try:
+    if "Расписание не найдено" in pages[0]:
+        kbd = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]])
+        target = msg_to_edit or (update.callback_query and update.callback_query.message)
+        if target:
+            try:
                     await target.edit_text(pages[0], reply_markup=kbd, parse_mode=ParseMode.HTML)
-                except BadRequest as e:
-                    if "no text in the message" in str(e).lower():
-                        # Сообщение содержит фото/документ, отправляем новое
+            except BadRequest as e:
+                if "no text in the message" in str(e).lower():
+                    # Сообщение содержит фото/документ, отправляем новое
                         await target.reply_text(pages[0], reply_markup=kbd, parse_mode=ParseMode.HTML)
-                    else:
-                        raise
-            else:
+                else:
+                    raise
+        else:
                 await update.effective_message.reply_text(pages[0], reply_markup=kbd, parse_mode=ParseMode.HTML)
-            return
+        return
 
-        user_data[CTX_SCHEDULE_PAGES], user_data[CTX_CURRENT_PAGE_INDEX] = pages, 0
-        await send_schedule_with_pagination(update, context, msg_to_edit=msg_to_edit)
+    user_data[CTX_SCHEDULE_PAGES], user_data[CTX_CURRENT_PAGE_INDEX] = pages, 0
+    await send_schedule_with_pagination(update, context, msg_to_edit=msg_to_edit)
 
         # Логируем активность
         db.log_activity(user_id, "view_schedule", f"mode={mode}, query={query}, date={date}")
@@ -1320,19 +1320,19 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # Если все еще не нашли, пробуем поиск по префиксу
         if (not found or err) and len(query_text.split()) > 1:
-            words = query_text.split(maxsplit=1)
+    words = query_text.split(maxsplit=1)
             prefix = words[0].lower()
             if prefix in {"п", "пр", "преп", "teacher", "преподаватель"}:
-                entity_type = API_TYPE_TEACHER
+        entity_type = API_TYPE_TEACHER
                 found, err = await search_entities(words[1], entity_type)
             elif prefix in {"г", "гр", "group", "группа"}:
-                entity_type = API_TYPE_GROUP
+        entity_type = API_TYPE_GROUP
                 found, err = await search_entities(words[1], entity_type)
 
         if err or not found or not entity_type:
-            if query_text:
-                logger.warning(f"❌ [{user_id}] Inline поиск: ничего не найдено для '{query_text}'")
-            await update.inline_query.answer([], cache_time=5, is_personal=True)
+        if query_text:
+            logger.warning(f"❌ [{user_id}] Inline поиск: ничего не найдено для '{query_text}'")
+        await update.inline_query.answer([], cache_time=5, is_personal=True)
         return
 
     logger.info(f"✅ [{user_id}] Inline поиск: найдено {len(found)} результатов (тип: {entity_type})")
@@ -1462,8 +1462,8 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
     set_user_busy(user_data, True)
 
     try:
-        entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
-        from .export import get_week_schedule_structured, generate_schedule_image
+    entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
+    from .export import get_week_schedule_structured, generate_schedule_image
 
         # Получаем расписание для выбранной недели
         week_schedule = await get_week_schedule_structured(entity_name, entity_type, week_offset=week_offset)
@@ -1584,8 +1584,8 @@ async def export_week_schedule_file(update: Update, context: ContextTypes.DEFAUL
     set_user_busy(user_data, True)
 
     try:
-        entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
-        from .export import get_week_schedule_structured, generate_week_schedule_file
+    entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
+    from .export import get_week_schedule_structured, generate_week_schedule_file
 
         # Получаем расписание для выбранной недели
         week_schedule = await get_week_schedule_structured(entity_name, entity_type, week_offset=week_offset)
@@ -1709,9 +1709,9 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
         pass
 
     try:
-        entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
-        from .export import get_week_schedule_structured, generate_day_schedule_image
-        from .schedule import get_schedule_structured
+    entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
+    from .export import get_week_schedule_structured, generate_day_schedule_image
+    from .schedule import get_schedule_structured
 
         # Используем ту же логику, что и в get_week_schedule_structured
         today = datetime.date.today()
@@ -1814,17 +1814,17 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
         # Отправляем все картинки одним MediaGroup
         if media_group:
             # Сохраняем состояние для возврата
-                    user_data["export_back_mode"] = mode
-                    user_data["export_back_query"] = entity_name
+            user_data["export_back_mode"] = mode
+            user_data["export_back_query"] = entity_name
             user_data["export_back_date"] = (monday + datetime.timedelta(days=5)).strftime("%Y-%m-%d")
-                    if user_data.get(CTX_SCHEDULE_PAGES):
-                        user_data["export_back_pages"] = user_data[CTX_SCHEDULE_PAGES]
-                        user_data["export_back_page_index"] = user_data.get(CTX_CURRENT_PAGE_INDEX, 0)
+            if user_data.get(CTX_SCHEDULE_PAGES):
+                user_data["export_back_pages"] = user_data[CTX_SCHEDULE_PAGES]
+                user_data["export_back_page_index"] = user_data.get(CTX_CURRENT_PAGE_INDEX, 0)
 
-                    back_kbd = InlineKeyboardMarkup([
+            back_kbd = InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ Назад к расписанию", callback_data=CallbackData.BACK_TO_SCHEDULE.value)],
-                        [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
-                    ])
+                [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+            ])
 
             # Отправляем MediaGroup
             try:
@@ -1945,10 +1945,10 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_answer_callback_query(update.callback_query)
 
     try:
-        if data == CALLBACK_DATA_MODE_STUDENT or data == CALLBACK_DATA_MODE_TEACHER:
-            mode = "student" if data == CALLBACK_DATA_MODE_STUDENT else "teacher"
-            mode_text = "студента" if mode == "student" else "преподавателя"
-            logger.info(f"🎯 [{user_id}] @{username} → Выбран режим: {mode_text}")
+    if data == CALLBACK_DATA_MODE_STUDENT or data == CALLBACK_DATA_MODE_TEACHER:
+        mode = "student" if data == CALLBACK_DATA_MODE_STUDENT else "teacher"
+        mode_text = "студента" if mode == "student" else "преподавателя"
+        logger.info(f"🎯 [{user_id}] @{username} → Выбран режим: {mode_text}")
             user_data[CTX_MODE] = mode
 
             # Проверяем, новый ли это пользователь (первый запуск без установленной группы)
@@ -2141,45 +2141,45 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif awaiting_manual:
                 await start_command(update, context)
             else:
-        await start_command(update, context)
-    elif data.startswith(CALLBACK_DATA_EXPORT_MENU):
-        await show_export_menu(update, context, data)
-    elif data.startswith(CALLBACK_DATA_EXPORT_WEEK_IMAGE):
-        await export_week_schedule_image(update, context, data)
-    elif data.startswith(CALLBACK_DATA_EXPORT_WEEK_FILE):
-        await export_week_schedule_file(update, context, data)
-    elif data.startswith(CALLBACK_DATA_EXPORT_DAYS_IMAGES):
-        await export_days_images(update, context, data)
-    elif data.startswith("view_changed_schedule_"):
-        # Обработка просмотра измененного расписания
-        parts = data.replace("view_changed_schedule_", "").split("_", 1)
-        if len(parts) == 2:
-            mode, date_str = parts[0], parts[1]
-            logger.info(f"👁️ [{user_id}] @{username} → Просмотр измененного расписания на {date_str}")
-            schedule_data = context.bot_data.get(f"changed_schedule_{user_id}_{date_str}")
-            if schedule_data:
+                await start_command(update, context)
+        elif data.startswith(CALLBACK_DATA_EXPORT_MENU):
+            await show_export_menu(update, context, data)
+        elif data.startswith(CALLBACK_DATA_EXPORT_WEEK_IMAGE):
+            await export_week_schedule_image(update, context, data)
+        elif data.startswith(CALLBACK_DATA_EXPORT_WEEK_FILE):
+            await export_week_schedule_file(update, context, data)
+        elif data.startswith(CALLBACK_DATA_EXPORT_DAYS_IMAGES):
+            await export_days_images(update, context, data)
+        elif data.startswith("view_changed_schedule_"):
+            # Обработка просмотра измененного расписания
+            parts = data.replace("view_changed_schedule_", "").split("_", 1)
+            if len(parts) == 2:
+                mode, date_str = parts[0], parts[1]
+                logger.info(f"👁️ [{user_id}] @{username} → Просмотр измененного расписания на {date_str}")
+                schedule_data = context.bot_data.get(f"changed_schedule_{user_id}_{date_str}")
+                if schedule_data:
                     user_data[CTX_MODE] = mode
                     user_data[CTX_SELECTED_DATE] = date_str
                     user_data[CTX_LAST_QUERY] = schedule_data["query"]
                     user_data[CTX_SCHEDULE_PAGES] = schedule_data["pages"]
                     user_data[CTX_CURRENT_PAGE_INDEX] = 0
-                await send_schedule_with_pagination(update, context)
-            else:
+                    await send_schedule_with_pagination(update, context)
+                else:
                     await safe_answer_callback_query(update.callback_query, "Расписание больше не доступно", show_alert=True)
         elif data == CallbackData.BACK_TO_SCHEDULE.value or data == "back_to_schedule_from_export":
-        # Возврат к расписанию из экспорта или меню экспорта
-        mode = user_data.get("export_back_mode")
-        query = user_data.get("export_back_query")
-        date_str = user_data.get("export_back_date", datetime.date.today().strftime("%Y-%m-%d"))
-        saved_pages = user_data.get("export_back_pages")
-        saved_page_index = user_data.get("export_back_page_index", 0)
+            # Возврат к расписанию из экспорта или меню экспорта
+            mode = user_data.get("export_back_mode")
+            query = user_data.get("export_back_query")
+            date_str = user_data.get("export_back_date", datetime.date.today().strftime("%Y-%m-%d"))
+            saved_pages = user_data.get("export_back_pages")
+            saved_page_index = user_data.get("export_back_page_index", 0)
 
-        logger.info(f"⬅️ [{user_id}] @{username} → Возврат к расписанию из экспорта: {query} ({date_str})")
+            logger.info(f"⬅️ [{user_id}] @{username} → Возврат к расписанию из экспорта: {query} ({date_str})")
 
-        if mode and query:
-            user_data[CTX_MODE] = mode
-            user_data[CTX_SELECTED_DATE] = date_str
-            user_data[CTX_LAST_QUERY] = query
+            if mode and query:
+                user_data[CTX_MODE] = mode
+                user_data[CTX_SELECTED_DATE] = date_str
+                user_data[CTX_LAST_QUERY] = query
 
             # Если есть сохраненные страницы, используем их для быстрого возврата
             if saved_pages:
