@@ -1318,21 +1318,21 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             if found and not err:
                 entity_type = API_TYPE_TEACHER
 
-    # Если все еще не нашли, пробуем поиск по префиксу
-    if (not found or err) and len(query_text.split()) > 1:
-    words = query_text.split(maxsplit=1)
-        prefix = words[0].lower()
-        if prefix in {"п", "пр", "преп", "teacher", "преподаватель"}:
-        entity_type = API_TYPE_TEACHER
-            found, err = await search_entities(words[1], entity_type)
-        elif prefix in {"г", "гр", "group", "группа"}:
-        entity_type = API_TYPE_GROUP
-            found, err = await search_entities(words[1], entity_type)
+        # Если все еще не нашли, пробуем поиск по префиксу
+        if (not found or err) and len(query_text.split()) > 1:
+            words = query_text.split(maxsplit=1)
+            prefix = words[0].lower()
+            if prefix in {"п", "пр", "преп", "teacher", "преподаватель"}:
+                entity_type = API_TYPE_TEACHER
+                found, err = await search_entities(words[1], entity_type)
+            elif prefix in {"г", "гр", "group", "группа"}:
+                entity_type = API_TYPE_GROUP
+                found, err = await search_entities(words[1], entity_type)
 
-    if err or not found or not entity_type:
-        if query_text:
-            logger.warning(f"❌ [{user_id}] Inline поиск: ничего не найдено для '{query_text}'")
-        await update.inline_query.answer([], cache_time=5, is_personal=True)
+        if err or not found or not entity_type:
+            if query_text:
+                logger.warning(f"❌ [{user_id}] Inline поиск: ничего не найдено для '{query_text}'")
+            await update.inline_query.answer([], cache_time=5, is_personal=True)
         return
 
     logger.info(f"✅ [{user_id}] Inline поиск: найдено {len(found)} результатов (тип: {entity_type})")
@@ -1462,8 +1462,8 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
     set_user_busy(user_data, True)
 
     try:
-    entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
-    from .export import get_week_schedule_structured, generate_schedule_image
+        entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
+        from .export import get_week_schedule_structured, generate_schedule_image
 
         # Получаем расписание для выбранной недели
         week_schedule = await get_week_schedule_structured(entity_name, entity_type, week_offset=week_offset)
@@ -1584,8 +1584,8 @@ async def export_week_schedule_file(update: Update, context: ContextTypes.DEFAUL
     set_user_busy(user_data, True)
 
     try:
-    entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
-    from .export import get_week_schedule_structured, generate_week_schedule_file
+        entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
+        from .export import get_week_schedule_structured, generate_week_schedule_file
 
         # Получаем расписание для выбранной недели
         week_schedule = await get_week_schedule_structured(entity_name, entity_type, week_offset=week_offset)
@@ -1709,9 +1709,9 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
         pass
 
     try:
-    entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
-    from .export import get_week_schedule_structured, generate_day_schedule_image
-    from .schedule import get_schedule_structured
+        entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
+        from .export import get_week_schedule_structured, generate_day_schedule_image
+        from .schedule import get_schedule_structured
 
         # Используем ту же логику, что и в get_week_schedule_structured
         today = datetime.date.today()
@@ -1945,10 +1945,10 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_answer_callback_query(update.callback_query)
 
     try:
-    if data == CALLBACK_DATA_MODE_STUDENT or data == CALLBACK_DATA_MODE_TEACHER:
-        mode = "student" if data == CALLBACK_DATA_MODE_STUDENT else "teacher"
-        mode_text = "студента" if mode == "student" else "преподавателя"
-        logger.info(f"🎯 [{user_id}] @{username} → Выбран режим: {mode_text}")
+        if data == CALLBACK_DATA_MODE_STUDENT or data == CALLBACK_DATA_MODE_TEACHER:
+            mode = "student" if data == CALLBACK_DATA_MODE_STUDENT else "teacher"
+            mode_text = "студента" if mode == "student" else "преподавателя"
+            logger.info(f"🎯 [{user_id}] @{username} → Выбран режим: {mode_text}")
             user_data[CTX_MODE] = mode
 
             # Проверяем, новый ли это пользователь (первый запуск без установленной группы)
