@@ -146,7 +146,13 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     ])
 
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+        try:
+            await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+        except BadRequest as e:
+            if "message is not modified" in str(e):
+                logger.debug("admin_users_list_callback: message not modified, skipping edit.")
+            else:
+                raise
         await update.callback_query.answer()
     else:
         await update.message.reply_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
