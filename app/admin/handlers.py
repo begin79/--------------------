@@ -650,10 +650,21 @@ async def admin_ping_user_callback(
     if not update.effective_user or not is_admin(update.effective_user.id):
         return
 
+    admin_id = update.effective_user.id
+
     ping_text = (
         "👋 <b>Сообщение от команды расписания</b>\n\n"
         "Пожалуйста, напишите любое сообщение в ответ, чтобы мы могли связаться с вами по важному вопросу."
     )
+
+    dialogs = _get_dialog_storage(context)
+    dialogs[user_id] = {
+        "admin_id": admin_id,
+        "last_ping_at": datetime.utcnow().isoformat()
+    }
+
+    user_context = context.application.user_data.setdefault(user_id, {})
+    user_context["pending_admin_reply"] = admin_id
 
     try:
         await context.bot.send_message(
@@ -723,6 +734,10 @@ async def handle_direct_message_input(update: Update, context: ContextTypes.DEFA
         "admin_username": admin_username,
         "last_sent_at": datetime.utcnow().isoformat()
     }
+
+    # Разрешаем пользователю ответить текстом без нажатия кнопки
+    user_context = context.application.user_data.setdefault(target_id, {})
+    user_context["pending_admin_reply"] = admin_id
 
     user_keyboard = InlineKeyboardMarkup([
         [

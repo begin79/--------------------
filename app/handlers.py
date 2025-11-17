@@ -625,14 +625,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"❌ [{user_id}] Неожиданная ошибка при отправке /start: {e}", exc_info=True)
                 break  # Для других ошибок не повторяем
 
-        # Устанавливаем ReplyKeyboardMarkup и удаляем подсказку через несколько секунд
+        # Устанавливаем ReplyKeyboardMarkup и оставляем его активным
         try:
-            hint_msg = await context.bot.send_message(
+            await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text="⌨️ Кнопки 'Старт' и 'Меню' доступны ниже.",
                 reply_markup=reply_keyboard
             )
-            asyncio.create_task(_delete_message_after_delay(context.bot, hint_msg.chat_id, hint_msg.message_id, 5.0))
         except Exception as e:
             logger.debug(f"Не удалось установить клавиатуру: {e}")
     elif update.callback_query:
