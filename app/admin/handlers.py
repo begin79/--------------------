@@ -608,6 +608,11 @@ def _get_dialog_storage(context: ContextTypes.DEFAULT_TYPE) -> Dict[int, Dict[st
     return context.application.bot_data.setdefault("admin_dialogs", {})
 
 
+def _get_admin_reply_states(context: ContextTypes.DEFAULT_TYPE) -> Dict[int, Dict[str, Any]]:
+    """Состояния ожидания ответа пользователя администратору"""
+    return context.application.bot_data.setdefault("admin_reply_states", {})
+
+
 async def admin_message_user_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -663,8 +668,8 @@ async def admin_ping_user_callback(
         "last_ping_at": datetime.utcnow().isoformat()
     }
 
-    user_context = context.application.user_data.setdefault(user_id, {})
-    user_context["pending_admin_reply"] = admin_id
+    reply_states = _get_admin_reply_states(context)
+    reply_states[user_id] = {"admin_id": admin_id, "from_ping": True}
 
     try:
         await context.bot.send_message(
@@ -736,8 +741,8 @@ async def handle_direct_message_input(update: Update, context: ContextTypes.DEFA
     }
 
     # Разрешаем пользователю ответить текстом без нажатия кнопки
-    user_context = context.application.user_data.setdefault(target_id, {})
-    user_context["pending_admin_reply"] = admin_id
+    reply_states = _get_admin_reply_states(context)
+    reply_states[target_id] = {"admin_id": admin_id, "from_message": True}
 
     user_keyboard = InlineKeyboardMarkup([
         [

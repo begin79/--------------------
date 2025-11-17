@@ -173,6 +173,11 @@ def _get_admin_dialog_storage(context: ContextTypes.DEFAULT_TYPE) -> dict:
     return context.application.bot_data.setdefault("admin_dialogs", {})
 
 
+def _get_admin_reply_states(context: ContextTypes.DEFAULT_TYPE) -> dict:
+    """Хранит состояния ожидания ответа пользователем администратору"""
+    return context.application.bot_data.setdefault("admin_reply_states", {})
+
+
 def _schedule_daily_notifications(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_data: dict):
     """Перенастраивает ежедневное уведомление согласно текущим настройкам пользователя"""
     if not context.job_queue or not chat_id:
@@ -324,6 +329,8 @@ async def handle_user_dismiss_admin_message(
     user_data = context.user_data
     if user_data.get("pending_admin_reply") == admin_id:
         user_data.pop("pending_admin_reply", None)
+        reply_states = _get_admin_reply_states(context)
+        reply_states.pop(user_id, None)
 
     user_id = update.effective_user.id if update.effective_user else None
     dialogs = _get_admin_dialog_storage(context)
@@ -352,6 +359,8 @@ async def process_user_reply_to_admin_message(
     full_name = update.effective_user.full_name if update.effective_user else (update.effective_user.first_name if update.effective_user else "")
 
     user_data.pop("pending_admin_reply", None)
+    reply_states = _get_admin_reply_states(context)
+    reply_states.pop(user_id, None)
 
     dialogs = _get_admin_dialog_storage(context)
     if user_id is not None:
@@ -740,10 +749,18 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     logger.info(f"💬 [{user_id}] @{username} ({first_name}) → Текстовое сообщение: '{text[:50]}{'...' if len(text) > 50 else ''}'")
 
     pending_admin_id = user_data.get("pending_admin_reply")
+    if not pending_admin_id:
+        reply_states = _get_admin_reply_states(context)
+        state = reply_states.get(user_id)
+        if state and state.get("admin_id"):
+            pending_admin_id = state["admin_id"]
+            user_data["pending_admin_reply"] = pending_admin_id
     if pending_admin_id:
         lowered = text.lower()
         if lowered in {"отмена", "cancel", "/cancel"}:
             user_data.pop("pending_admin_reply", None)
+            reply_states = _get_admin_reply_states(context)
+            reply_states.pop(user_id, None)
             await update.message.reply_text("✅ Ответ администратору отменён.")
         else:
             await process_user_reply_to_admin_message(update, context, pending_admin_id, text)
