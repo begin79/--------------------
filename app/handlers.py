@@ -3,6 +3,7 @@ import logging
 import hashlib
 import re
 import asyncio
+from io import BytesIO
 from dateutil.parser import parse as parse_date
 from typing import Optional, Tuple
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, Message, InlineQueryResultArticle, InputTextMessageContent, InputMediaPhoto
@@ -20,7 +21,7 @@ from .constants import (
     CALLBACK_DATA_PREV_SCHEDULE_PREFIX, CALLBACK_DATA_NEXT_SCHEDULE_PREFIX,
     CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX,
     CALLBACK_DATA_EXPORT_WEEK_IMAGE, CALLBACK_DATA_EXPORT_WEEK_FILE, CALLBACK_DATA_EXPORT_MENU,
-    CALLBACK_DATA_EXPORT_DAYS_IMAGES,
+    CALLBACK_DATA_EXPORT_DAYS_IMAGES, CALLBACK_DATA_EXPORT_SEMESTER,
     API_TYPE_GROUP, API_TYPE_TEACHER, GROUP_NAME_PATTERN, CallbackData,
 )
 from .utils import escape_html
@@ -32,6 +33,12 @@ from .admin.handlers import (
     CALLBACK_ADMIN_USER_DETAILS_PREFIX,
     CALLBACK_USER_REPLY_ADMIN_PREFIX,
     CALLBACK_USER_DISMISS_ADMIN_PREFIX,
+)
+from excel_export.export_semester import (
+    resolve_semester_bounds,
+    fetch_semester_schedule,
+    build_excel_workbook,
+    build_group_archive_bytes,
 )
 
 logger = logging.getLogger(__name__)
@@ -103,6 +110,61 @@ def set_user_busy(user_data: dict, busy: bool = True):
         user_data[CTX_IS_BUSY] = True
     else:
         user_data.pop(CTX_IS_BUSY, None)
+
+
+class ExportProgress:
+    """Текстовый индикатор прогресса для долгих операций экспорта"""
+
+    def __init__(self, parent_message: Optional[Message]):
+        self.parent_message = parent_message
+        self.message: Optional[Message] = None
+        self.current_percent = 0
+        self.current_text = ""
+
+    @staticmethod
+    def _format(text: str, percent: int) -> str:
+        blocks = 10
+        filled = max(0, min(blocks, round(percent / 10)))
+        bar = "█" * filled + "░" * (blocks - filled)
+        return f"{text}\n{bar} {percent}%"
+
+    async def start(self, text: str) -> None:
+        if not self.parent_message:
+            return
+        try:
+            initial_percent = 5
+            self.current_percent = initial_percent
+            self.current_text = text
+            self.message = await self.parent_message.reply_text(self._format(text, initial_percent))
+        except Exception:
+            self.message = None
+
+    async def update(self, percent: int, text: Optional[str] = None) -> None:
+        if not self.message:
+            return
+        percent = max(0, min(100, percent))
+        update_text = text or self.current_text or "⏳ Генерирую..."
+        if abs(percent - self.current_percent) < 3 and update_text == self.current_text:
+            return
+        self.current_percent = percent
+        self.current_text = update_text
+        try:
+            await self.message.edit_text(self._format(update_text, percent))
+        except Exception:
+            pass
+
+    async def finish(self, text: str = "✅ Экспорт готов!", delete_after: float = 5.0) -> None:
+        if not self.message:
+            return
+        try:
+            await self.message.edit_text(text)
+            if delete_after and self.message.get_bot():
+                bot = self.message.get_bot()
+                asyncio.create_task(
+                    _delete_message_after_delay(bot, self.message.chat_id, self.message.message_id, delete_after)
+                )
+        except Exception:
+            pass
 
 
 def _get_admin_dialog_storage(context: ContextTypes.DEFAULT_TYPE) -> dict:
@@ -409,6 +471,12 @@ def get_default_reply_keyboard() -> ReplyKeyboardMarkup:
         one_time_keyboard=False
     )
 
+
+def sanitize_filename(value: str) -> str:
+    """Удаляет недопустимые символы из имени файла"""
+    cleaned = re.sub(r'[\\/*?:"<>|]', "_", value).strip()
+    return cleaned or "export"
+
 async def _delete_message_after_delay(bot, chat_id: int, message_id: int, delay: float):
     """Удаляет сообщение через указанную задержку"""
     await asyncio.sleep(delay)
@@ -456,6 +524,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  CTX_SCHEDULE_PAGES, CTX_CURRENT_PAGE_INDEX, CTX_AWAITING_DEFAULT_QUERY, CTX_IS_BUSY]
     for key in temp_keys:
         context.user_data.pop(key, None)
+    for dynamic_key in list(context.user_data.keys()):
+        if dynamic_key.startswith("pending_query_") or dynamic_key.startswith("default_options_"):
+            context.user_data.pop(dynamic_key, None)
 
     # Сохраняем информацию о пользователе в БД
     save_user_data_to_db(user_id, username, first_name, last_name, context.user_data)
@@ -553,20 +624,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"❌ [{user_id}] Неожиданная ошибка при отправке /start: {e}", exc_info=True)
                 break  # Для других ошибок не повторяем
 
-        # Устанавливаем ReplyKeyboardMarkup только для новых пользователей с подсказкой
-        if is_first_time:
-            # Для новых пользователей показываем подсказку и удаляем через 5 секунд
-            try:
-                help_msg = await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text="💡 Используйте кнопки ниже для быстрой навигации",
-                    reply_markup=reply_keyboard
-                )
-                # Удаляем сообщение через 5 секунд
-                asyncio.create_task(_delete_message_after_delay(context.bot, help_msg.chat_id, help_msg.message_id, 5.0))
-            except Exception as e:
-                logger.debug(f"Не удалось установить клавиатуру: {e}")
-        # Для существующих пользователей клавиатура устанавливается при следующем ответе бота (через reply_markup)
+        # Устанавливаем ReplyKeyboardMarkup и удаляем подсказку через несколько секунд
+        try:
+            hint_msg = await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="⌨️ Кнопки 'Старт' и 'Меню' доступны ниже.",
+                reply_markup=reply_keyboard
+            )
+            asyncio.create_task(_delete_message_after_delay(context.bot, hint_msg.chat_id, hint_msg.message_id, 5.0))
+        except Exception as e:
+            logger.debug(f"Не удалось установить клавиатуру: {e}")
     elif update.callback_query:
         if not await safe_edit_message_text(update.callback_query, text, reply_markup=keyboard, parse_mode=ParseMode.HTML):
             # Если редактирование не удалось, пытаемся отправить новое сообщение
@@ -1014,11 +1081,11 @@ async def send_schedule_with_pagination(update: Update, context: ContextTypes.DE
     header += f"👤 <b>{escape_html(query)}</b>\n"
     header += f"📄 Страница {idx + 1} из {len(pages)}\n"
     header += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    
+
     # Проверяем длину сообщения (Telegram ограничивает до 4096 символов)
     schedule_content = pages[idx]
     text = header + schedule_content
-    
+
     # Если сообщение слишком длинное, обрезаем его и добавляем предупреждение
     MAX_MESSAGE_LENGTH = 4000  # Оставляем запас для HTML тегов
     if len(text) > MAX_MESSAGE_LENGTH:
@@ -1409,12 +1476,14 @@ async def show_export_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, d
             [InlineKeyboardButton("🖼 Неделя (картинка)", callback_data=f"{CALLBACK_DATA_EXPORT_WEEK_IMAGE}_{mode}_{query_hash}")],
             [InlineKeyboardButton("📄 Неделя (PDF)", callback_data=f"{CALLBACK_DATA_EXPORT_WEEK_FILE}_{mode}_{query_hash}")],
             [InlineKeyboardButton("📸 По дням (картинки)", callback_data=f"{CALLBACK_DATA_EXPORT_DAYS_IMAGES}_{mode}_{query_hash}")],
+            [InlineKeyboardButton("📊 Семестр (Excel)", callback_data=f"{CALLBACK_DATA_EXPORT_SEMESTER}_{mode}_{query_hash}")],
         ])
     else:
         # Для преподавателей: неделя картинкой, неделя файлом (PDF)
         kbd_rows.extend([
             [InlineKeyboardButton("🖼 Неделя (картинка)", callback_data=f"{CALLBACK_DATA_EXPORT_WEEK_IMAGE}_{mode}_{query_hash}")],
             [InlineKeyboardButton("📄 Неделя (PDF)", callback_data=f"{CALLBACK_DATA_EXPORT_WEEK_FILE}_{mode}_{query_hash}")],
+            [InlineKeyboardButton("📊 Семестр (Excel)", callback_data=f"{CALLBACK_DATA_EXPORT_SEMESTER}_{mode}_{query_hash}")],
         ])
 
     # Кнопка "Назад" должна возвращать к расписанию, а не в начало
@@ -1437,6 +1506,21 @@ def parse_export_callback_data(data: str, prefix: str) -> Tuple[Optional[str], O
         return None, None
     except Exception:
         return None, None
+
+
+def parse_semester_callback_data(data: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Парсит callback data семестрового экспорта: (mode, query_hash, option)"""
+    try:
+        payload = data.replace(f"{CALLBACK_DATA_EXPORT_SEMESTER}_", "", 1)
+        parts = payload.split("_")
+        if len(parts) >= 2:
+            mode = parts[0]
+            query_hash = parts[1]
+            semester_option = "_".join(parts[2:]) if len(parts) > 2 else None
+            return mode, query_hash, semester_option
+        return None, None, None
+    except Exception:
+        return None, None, None
 
 async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     """Экспорт расписания на неделю картинкой"""
@@ -1467,11 +1551,17 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
         await safe_answer_callback_query(update.callback_query, "Ошибка: данные не найдены", show_alert=True)
         return
 
+    if check_user_busy(user_data):
+        await safe_answer_callback_query(update.callback_query, "⏳ Уже генерирую другой экспорт, подождите...")
+        return
+
     # Отвечаем на callback сразу, чтобы избежать timeout
     await safe_answer_callback_query(update.callback_query, "Генерирую картинку...")
 
     # Устанавливаем блокировку
     set_user_busy(user_data, True)
+    progress = ExportProgress(update.callback_query.message)
+    await progress.start("⏳ Подготавливаю расписание...")
 
     try:
         entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
@@ -1506,6 +1596,7 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
                     [InlineKeyboardButton("⬅️ Назад", callback_data=f"{CALLBACK_DATA_EXPORT_MENU}_{mode}_{query_hash}")]
                 ])
                 await update.callback_query.message.edit_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+                await progress.finish("ℹ️ Выберите неделю.", delete_after=0)
                 set_user_busy(user_data, False)
                 return
 
@@ -1514,9 +1605,11 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
             await update.callback_query.message.reply_text(
                 "❌ На выбранной неделе нет занятий."
             )
+            await progress.finish("⚠️ На выбранной неделе нет занятий.", delete_after=0)
             set_user_busy(user_data, False)
             return
 
+        await progress.update(60, "🖼 Рисую изображение...")
         # Генерируем картинку (это может занять время)
         img_bytes = await generate_schedule_image(week_schedule, entity_name, entity_type)
 
@@ -1544,10 +1637,12 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
                 caption=f"📅 Расписание на неделю для {entity_label}: {escape_html(entity_name)}",
                 reply_markup=back_kbd
             )
+            await progress.finish()
         else:
             from .export import format_week_schedule_text
             text = format_week_schedule_text(week_schedule, entity_name, entity_type)
             await update.callback_query.message.reply_text(text, parse_mode=ParseMode.HTML)
+            await progress.finish("ℹ️ Отправил текст вместо картинки.", delete_after=0)
     except Exception as e:
         logger.error(f"Ошибка при генерации картинки: {e}", exc_info=True)
         try:
@@ -1556,6 +1651,7 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
             )
         except Exception:
             pass
+        await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
     finally:
         # Снимаем блокировку
         set_user_busy(user_data, False)
@@ -1589,11 +1685,17 @@ async def export_week_schedule_file(update: Update, context: ContextTypes.DEFAUL
         await safe_answer_callback_query(update.callback_query, "Ошибка: данные не найдены", show_alert=True)
         return
 
+    if check_user_busy(user_data):
+        await safe_answer_callback_query(update.callback_query, "⏳ Уже генерирую другой экспорт, подождите...")
+        return
+
     # Отвечаем на callback сразу
     await safe_answer_callback_query(update.callback_query, "Генерирую файл...")
 
     # Устанавливаем блокировку
     set_user_busy(user_data, True)
+    progress = ExportProgress(update.callback_query.message)
+    await progress.start("⏳ Подготавливаю расписание...")
 
     try:
         entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
@@ -1628,6 +1730,7 @@ async def export_week_schedule_file(update: Update, context: ContextTypes.DEFAUL
                     [InlineKeyboardButton("⬅️ Назад", callback_data=f"{CALLBACK_DATA_EXPORT_MENU}_{mode}_{query_hash}")]
                 ])
                 await update.callback_query.message.edit_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+                await progress.finish("ℹ️ Выберите неделю.", delete_after=0)
                 set_user_busy(user_data, False)
                 return
 
@@ -1636,8 +1739,10 @@ async def export_week_schedule_file(update: Update, context: ContextTypes.DEFAUL
             await update.callback_query.message.reply_text(
                 "❌ На выбранной неделе нет занятий."
             )
+            await progress.finish("⚠️ На выбранной неделе нет занятий.", delete_after=0)
             set_user_busy(user_data, False)
             return
+        await progress.update(60, "📄 Формирую PDF...")
         file_bytes = await generate_week_schedule_file(week_schedule, entity_name, entity_type)
 
         if file_bytes:
@@ -1666,17 +1771,20 @@ async def export_week_schedule_file(update: Update, context: ContextTypes.DEFAUL
                 caption=f"📄 Расписание на неделю для {entity_label}: {escape_html(entity_name)}",
                 reply_markup=back_kbd
             )
+            await progress.finish()
         else:
             try:
                 await update.callback_query.message.reply_text("❌ Ошибка при генерации файла. Попробуйте позже.")
             except Exception:
                 pass
+            await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
     except Exception as e:
         logger.error(f"Ошибка при генерации файла: {e}", exc_info=True)
         try:
             await update.callback_query.message.reply_text("❌ Произошла ошибка при генерации файла. Попробуйте позже.")
         except Exception:
             pass
+        await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
     finally:
         # Снимаем блокировку
         set_user_busy(user_data, False)
@@ -1707,18 +1815,17 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await safe_answer_callback_query(update.callback_query, "Ошибка: данные не найдены", show_alert=True)
         return
 
+    if check_user_busy(user_data):
+        await safe_answer_callback_query(update.callback_query, "⏳ Уже генерирую другой экспорт, подождите...")
+        return
+
     # Отвечаем на callback сразу
     await safe_answer_callback_query(update.callback_query, "Генерирую картинки по дням...")
 
     # Устанавливаем блокировку
     set_user_busy(user_data, True)
-
-    # Отправляем сообщение о начале генерации
-    progress_msg = None
-    try:
-        progress_msg = await update.callback_query.message.reply_text("🔄 Генерирую расписание по дням...\n\n📊 Прогресс: 0 из 6")
-    except Exception:
-        pass
+    progress = ExportProgress(update.callback_query.message)
+    await progress.start("⏳ Подготавливаю изображения по дням...")
 
     try:
         entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
@@ -1750,11 +1857,7 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
         total_days_with_pairs = len(days_with_pairs_list)
         if total_days_with_pairs == 0:
-            if progress_msg:
-                try:
-                    await progress_msg.delete()
-                except Exception:
-                    pass
+            await progress.finish("📅 На этой неделе нет занятий.", delete_after=0)
             try:
                 await update.callback_query.message.reply_text("📅 На этой неделе нет занятий.")
             except Exception:
@@ -1776,23 +1879,6 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
             if not pairs:  # Пропускаем дни без пар
                 continue
 
-            # Обновляем прогресс только в начале и периодически (реже, чтобы было плавнее)
-            if progress_msg:
-                # Обновляем только при первой генерации и потом каждые 2 картинки
-                should_update_progress = (generated_count == 0) or (generated_count > 0 and generated_count % 2 == 0)
-                if should_update_progress:
-                    try:
-                        progress_text = (
-                            f"🔄 Генерирую расписание по дням...\n\n"
-                            f"📊 Прогресс: {generated_count} из {total_days_with_pairs}\n"
-                            f"📅 Текущий день: {weekday_name}"
-                        )
-                        await progress_msg.edit_text(progress_text)
-                        # Задержка для плавности отображения
-                        await asyncio.sleep(1.0)
-                    except Exception:
-                        pass
-
             day_schedule, err = await get_schedule_structured(date_str, entity_name, entity_type)
             if err or not day_schedule:
                 logger.warning(f"Не удалось получить расписание для {date_str}: {err}")
@@ -1810,18 +1896,13 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 else:
                     media_group.append(InputMediaPhoto(media=img_bytes))
                 generated_count += 1
+                percent = int((generated_count / total_days_with_pairs) * 100)
+                await progress.update(max(10, percent), f"📅 {weekday_name}")
 
                 # Небольшая задержка между генерацией картинок
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
             else:
                 logger.warning(f"Не удалось сгенерировать картинку для {date_str}")
-
-        # Удаляем сообщение о прогрессе перед отправкой
-        if progress_msg:
-            try:
-                await progress_msg.delete()
-            except Exception:
-                pass
 
         # Отправляем все картинки одним MediaGroup
         if media_group:
@@ -1868,36 +1949,138 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     except Exception as photo_error:
                         logger.error(f"Ошибка при отправке фото {i}: {photo_error}")
 
-            # Удаляем сообщение о прогрессе
-            if progress_msg:
-                try:
-                    await progress_msg.delete()
-                except Exception:
-                    pass
+            await progress.finish()
         else:
-            # Удаляем сообщение о прогрессе и отправляем сообщение об отсутствии расписания
-            if progress_msg:
-                try:
-                    await progress_msg.delete()
-                except Exception:
-                    pass
+            await progress.finish("⚠️ Не удалось сгенерировать изображения.", delete_after=0)
             try:
-                await update.callback_query.message.reply_text("📅 На этой неделе нет занятий.")
+                await update.callback_query.message.reply_text("⚠️ Не удалось сгенерировать изображения.")
             except Exception:
                 pass
     except Exception as e:
         logger.error(f"Ошибка при генерации картинок по дням: {e}", exc_info=True)
-        if progress_msg:
-            try:
-                await progress_msg.delete()
-            except Exception:
-                pass
         try:
             await update.callback_query.message.reply_text("❌ Произошла ошибка при генерации картинок. Попробуйте позже.")
         except Exception:
             pass
+        await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
     finally:
         # Снимаем блокировку
+        set_user_busy(user_data, False)
+
+
+async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Экспорт полного семестра в Excel"""
+    if not update.callback_query:
+        return
+
+    user_data = context.user_data
+    mode, query_hash, semester_option = parse_semester_callback_data(data)
+    if not mode or not query_hash:
+        await safe_answer_callback_query(update.callback_query, "Ошибка данных", show_alert=True)
+        return
+
+    entity_name = user_data.get(f"export_{mode}_{query_hash}")
+    if not entity_name:
+        await safe_answer_callback_query(update.callback_query, "Ошибка: данные не найдены", show_alert=True)
+        return
+
+    if not semester_option:
+        text = (
+            f"📊 <b>Экспорт семестра для {'преподавателя' if mode == 'teacher' else 'группы'}:</b>\n"
+            f"<code>{escape_html(entity_name)}</code>\n\n"
+            "Выберите семестр:"
+        )
+        kbd = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🧠 Авто (текущий)", callback_data=f"{CALLBACK_DATA_EXPORT_SEMESTER}_{mode}_{query_hash}_auto")],
+            [InlineKeyboardButton("🍂 Осенний (сентябрь-декабрь)", callback_data=f"{CALLBACK_DATA_EXPORT_SEMESTER}_{mode}_{query_hash}_autumn")],
+            [InlineKeyboardButton("🌸 Весенний (январь-апрель)", callback_data=f"{CALLBACK_DATA_EXPORT_SEMESTER}_{mode}_{query_hash}_spring")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data=f"{CALLBACK_DATA_EXPORT_MENU}_{mode}_{query_hash}")],
+        ])
+        await safe_edit_message_text(update.callback_query, text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+        return
+
+    if check_user_busy(user_data):
+        await safe_answer_callback_query(update.callback_query, "⏳ Уже генерирую другой экспорт, подождите...")
+        return
+
+    await safe_answer_callback_query(update.callback_query, "Готовлю Excel...")
+    set_user_busy(user_data, True)
+    progress = ExportProgress(update.callback_query.message)
+    await progress.start("⏳ Собираю данные семестра...")
+
+    try:
+        semester_key = None if semester_option == "auto" else semester_option
+        start_date, end_date, semester_label = resolve_semester_bounds(semester_key, None, None, None)
+        await progress.update(20, f"📅 {semester_label}")
+
+        entity_type = API_TYPE_GROUP if mode == "student" else API_TYPE_TEACHER
+        timetable = await fetch_semester_schedule(entity_name, entity_type, start_date, end_date)
+
+        if not timetable:
+            await progress.finish("📅 За период нет занятий.", delete_after=0)
+            await update.callback_query.message.reply_text("❌ За выбранный период нет занятий.")
+            return
+
+        await progress.update(55, "📘 Формирую Excel...")
+        workbook, per_group_rows, per_teacher_rows, total_hours, per_group_hours, per_teacher_hours = build_excel_workbook(
+            entity_name, mode, semester_label, timetable
+        )
+
+        main_buffer = BytesIO()
+        workbook.save(main_buffer)
+        main_buffer.seek(0)
+        filename = f"{sanitize_filename(entity_name)}_{semester_label.replace(' ', '_')}.xlsx"
+        entity_label = "преподавателя" if mode == "teacher" else "группы"
+        caption = (
+            f"📊 Семестр ({semester_label}) для {entity_label}: <b>{escape_html(entity_name)}</b>\n"
+            f"🕒 Всего часов: {total_hours:.1f}"
+        )
+
+        user_data["export_back_mode"] = mode
+        user_data["export_back_query"] = entity_name
+        export_date = user_data.get(CTX_SELECTED_DATE, datetime.date.today().strftime("%Y-%m-%d"))
+        user_data["export_back_date"] = export_date
+        if user_data.get(CTX_SCHEDULE_PAGES):
+            user_data["export_back_pages"] = user_data[CTX_SCHEDULE_PAGES]
+            user_data["export_back_page_index"] = user_data.get(CTX_CURRENT_PAGE_INDEX, 0)
+
+        back_kbd = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Назад к расписанию", callback_data=CallbackData.BACK_TO_SCHEDULE.value)],
+            [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+        ])
+
+        await progress.update(80, "📤 Отправляю файл...")
+        await update.callback_query.message.reply_document(
+            document=main_buffer,
+            filename=filename,
+            caption=caption,
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_kbd
+        )
+
+        if mode == "teacher" and per_group_rows:
+            zip_bytes, groups_count = build_group_archive_bytes(per_group_rows, per_group_hours, entity_name, semester_label)
+            if zip_bytes and groups_count:
+                await progress.update(90, "📦 Упаковываю группы...")
+                zip_stream = BytesIO(zip_bytes)
+                zip_filename = f"{sanitize_filename(entity_name)}_{semester_label.replace(' ', '_')}_groups.zip"
+                zip_caption = f"📁 Отдельные файлы по {groups_count} группам"
+                await update.callback_query.message.reply_document(
+                    document=zip_stream,
+                    filename=zip_filename,
+                    caption=zip_caption,
+                    reply_markup=back_kbd
+                )
+
+        await progress.finish()
+    except Exception as exc:
+        logger.error(f"Ошибка при экспорте семестра: {exc}", exc_info=True)
+        await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
+        try:
+            await update.callback_query.message.reply_text("❌ Произошла ошибка при экспорте. Попробуйте позже.")
+        except Exception:
+            pass
+    finally:
         set_user_busy(user_data, False)
 
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2162,6 +2345,8 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await export_week_schedule_file(update, context, data)
         elif data.startswith(CALLBACK_DATA_EXPORT_DAYS_IMAGES):
             await export_days_images(update, context, data)
+        elif data.startswith(CALLBACK_DATA_EXPORT_SEMESTER):
+            await export_semester_excel(update, context, data)
         elif data.startswith("view_changed_schedule_"):
             # Обработка просмотра измененного расписания
             parts = data.replace("view_changed_schedule_", "").split("_", 1)

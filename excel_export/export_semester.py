@@ -9,13 +9,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import io
 import logging
 import os
+import re
 import sys
+import time
+import zipfile
 from collections import OrderedDict
 from importlib import import_module
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -31,6 +35,8 @@ except Exception:  # pragma: no cover
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
+os.environ.setdefault("BOT_TOKEN", os.environ.get("BOT_TOKEN", "excel-export-placeholder"))
 
 from app.constants import API_TYPE_GROUP, API_TYPE_TEACHER  # noqa: E402
 from app.schedule import get_schedule_structured  # noqa: E402
@@ -106,6 +112,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bot-token", type=str, help="Токен Telegram-бота для отправки файла")
     parser.add_argument("--chat-id", type=str, help="ID чата для отправки файла")
     parser.add_argument("--silent", action="store_true", help="Отключить информационные логи")
+    parser.add_argument(
+        "--split-groups",
+        action="store_true",
+        help="Для преподавателя дополнительно сохранить отдельный Excel-файл на каждую группу",
+    )
     return parser.parse_args()
 
 
@@ -153,11 +164,16 @@ async def fetch_semester_schedule(
     start_date: dt.date,
     end_date: dt.date,
 ) -> "OrderedDict[dt.date, Dict]":
-    aggregated: "OrderedDict[dt.date, Dict]" = OrderedDict()
-    date_cursor = start_date
-    total_days = (end_date - start_date).days + 1
+    valid_days: List[dt.date] = []
+    cursor = start_date
+    while cursor <= end_date:
+        if cursor.weekday() != 6:  # воскресенье пропускаем
+            valid_days.append(cursor)
+        cursor += dt.timedelta(days=1)
+
+    total_days = len(valid_days)
     logger.info(
-        "📅 Собираю расписание для '%s' (%s) с %s по %s (%d дней)",
+        "📅 Собираю расписание для '%s' (%s) с %s по %s (%d учебных дней)",
         query,
         "группа" if entity_type == API_TYPE_GROUP else "преподаватель",
         start_date.strftime("%d.%m.%Y"),
@@ -165,26 +181,38 @@ async def fetch_semester_schedule(
         total_days,
     )
 
-    while date_cursor <= end_date:
-        if date_cursor.weekday() == 6:  # воскресенье пропускаем
-            date_cursor += dt.timedelta(days=1)
-            continue
+    semaphore = asyncio.Semaphore(8)
+    results: Dict[dt.date, Dict] = {}
+    start_ts = time.perf_counter()
 
-        date_str = date_cursor.strftime("%Y-%m-%d")
-        structured, err = await get_schedule_structured(date_str, query, entity_type)
+    async def fetch_day(date_obj: dt.date):
+        date_str = date_obj.strftime("%Y-%m-%d")
+        async with semaphore:
+            structured, err = await get_schedule_structured(date_str, query, entity_type)
         if err:
             logger.debug("Нет расписания на %s: %s", date_str, err)
-        elif structured and structured.get("pairs"):
-            actual_date_str = structured.get("date_iso", date_str)
+            return
+        if not structured or not structured.get("pairs"):
+            return
+        actual_date_str = structured.get("date_iso", date_str)
+        try:
             actual_date = dt.datetime.strptime(actual_date_str, "%Y-%m-%d").date()
-            aggregated[actual_date] = {
-                "weekday": structured.get("weekday") or WEEKDAY_NAMES[actual_date.weekday()],
-                "pairs": structured.get("pairs", []),
-            }
-        date_cursor += dt.timedelta(days=1)
+        except ValueError:
+            actual_date = date_obj
+        results[actual_date] = {
+            "weekday": structured.get("weekday") or WEEKDAY_NAMES[actual_date.weekday()],
+            "pairs": structured.get("pairs", []),
+        }
 
-    logger.info("✅ Найдено %d учебных дней с расписанием", len(aggregated))
-    return aggregated
+    await asyncio.gather(*(fetch_day(day) for day in valid_days))
+    ordered = OrderedDict(sorted(results.items(), key=lambda item: item[0]))
+    duration = time.perf_counter() - start_ts
+    logger.info(
+        "✅ Найдено %d учебных дней с расписанием (%.1f c)",
+        len(ordered),
+        duration,
+    )
+    return ordered
 
 
 def build_excel_workbook(
@@ -192,7 +220,14 @@ def build_excel_workbook(
     mode: str,
     semester_label: str,
     data: "OrderedDict[dt.date, Dict]",
-) -> Workbook:
+) -> Tuple[
+    Workbook,
+    Dict[str, List[List[str]]],
+    Dict[str, List[List[str]]],
+    float,
+    Dict[str, float],
+    Dict[str, float],
+]:
     wb = Workbook()
     ws = wb.active
     sheet_name = _sanitize_sheet_name(entity_name)
@@ -233,6 +268,12 @@ def build_excel_workbook(
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border = border
 
+    per_group_rows: Dict[str, List[List[str]]] = {}
+    per_teacher_rows: Dict[str, List[List[str]]] = {}
+    per_group_hours: Dict[str, float] = {}
+    per_teacher_hours: Dict[str, float] = {}
+    total_hours = 0.0
+
     for date_obj, info in data.items():
         weekday = info.get("weekday") or WEEKDAY_NAMES[date_obj.weekday()]
         pairs = info.get("pairs", [])
@@ -250,13 +291,8 @@ def build_excel_workbook(
             teacher = pair.get("teacher") or pair.get("fio") or ""
             auditorium = pair.get("auditorium") or pair.get("room") or ""
 
-            groups_data = pair.get("groups") or []
-            if isinstance(groups_data, str):
-                groups_str = groups_data
-            elif isinstance(groups_data, Iterable):
-                groups_str = ", ".join(map(str, groups_data))
-            else:
-                groups_str = ""
+            groups_list = _extract_groups(pair)
+            groups_str = ", ".join(groups_list)
 
             subgroup = pair.get("subgroup")
             if subgroup:
@@ -268,6 +304,9 @@ def build_excel_workbook(
                 pair.get("note"),
             ]
             comment = "; ".join(str(part) for part in comment_parts if part)
+
+            duration = _calculate_pair_duration(time_slot)
+            total_hours += duration
 
             row = [
                 date_obj.strftime("%d.%m.%Y"),
@@ -282,9 +321,62 @@ def build_excel_workbook(
             ]
             ws.append(row)
 
+            if mode == "teacher" and groups_list:
+                for grp in groups_list:
+                    per_group_rows.setdefault(grp, []).append(
+                        [
+                            date_obj.strftime("%d.%m.%Y"),
+                            weekday,
+                            pair_counter,
+                            time_slot,
+                            pair.get("subject", "-"),
+                            auditorium,
+                            comment,
+                        ]
+                    )
+                    per_group_hours[grp] = per_group_hours.get(grp, 0.0) + duration
+            if mode == "student":
+                teacher_name = teacher.strip()
+                if teacher_name:
+                    per_teacher_rows.setdefault(teacher_name, []).append(
+                        [
+                            date_obj.strftime("%d.%m.%Y"),
+                            weekday,
+                            pair_counter,
+                            time_slot,
+                            pair.get("subject", "-"),
+                            teacher,
+                            auditorium,
+                            comment,
+                        ]
+                    )
+                    per_teacher_hours[teacher_name] = per_teacher_hours.get(teacher_name, 0.0) + duration
+
     ws.freeze_panes = "A5"
     _auto_fit_columns(ws, max_width=45)
-    return wb
+    if total_hours > 0:
+        ws.append([])
+        summary_row = [
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            f"Итого: {total_hours:.1f} часов",
+        ]
+        ws.append(summary_row)
+        for cell in ws[ws.max_row]:
+            cell.font = Font(bold=True)
+
+    if mode == "teacher" and per_group_rows:
+        _add_group_sheets(wb, per_group_rows, per_group_hours)
+    if mode == "student" and per_teacher_rows:
+        _add_teacher_sheets(wb, per_teacher_rows, per_teacher_hours)
+
+    return wb, per_group_rows, per_teacher_rows, total_hours, per_group_hours, per_teacher_hours
 
 
 def _auto_fit_columns(ws, max_width: int = 40) -> None:
@@ -305,14 +397,277 @@ def _sanitize_sheet_name(value: str) -> str:
     return cleaned or "Sheet1"
 
 
+def _sanitize_filename(value: str) -> str:
+    cleaned = re.sub(r'[\\/*?:"<>|]', "_", value).strip()
+    return cleaned or "export"
+
+
+def _extract_groups(pair: Dict) -> List[str]:
+    groups_data = pair.get("groups") or []
+    if isinstance(groups_data, str):
+        result = [groups_data.strip()] if groups_data.strip() else []
+    elif isinstance(groups_data, Iterable):
+        result = [str(item).strip() for item in groups_data if str(item).strip()]
+    else:
+        result = []
+    return result
+
+
+def _calculate_pair_duration(time_slot: str) -> float:
+    if not time_slot:
+        return 1.5
+    match = re.search(r"(\d{1,2})[:.](\d{2})\s*[-–]\s*(\d{1,2})[:.](\d{2})", time_slot)
+    if not match:
+        return 1.5
+    start_h, start_m, end_h, end_m = map(int, match.groups())
+    start = dt.timedelta(hours=start_h, minutes=start_m)
+    end = dt.timedelta(hours=end_h, minutes=end_m)
+    duration = (end - start).total_seconds() / 3600
+    if duration <= 0:
+        duration += 24
+    return round(duration, 2)
+
+
+def _ensure_unique_sheet_name(base: str, used: set[str]) -> str:
+    name = _sanitize_sheet_name(base)
+    if name not in used:
+        used.add(name)
+        return name
+    suffix = 2
+    while True:
+        candidate = _sanitize_sheet_name(f"{name}_{suffix}")
+        if candidate not in used:
+            used.add(candidate)
+            return candidate
+        suffix += 1
+
+
+def _add_group_sheets(
+    wb: Workbook,
+    per_group_rows: Dict[str, List[List[str]]],
+    per_group_hours: Dict[str, float],
+) -> None:
+    used_names = {ws.title for ws in wb.worksheets}
+    headers = [
+        "Дата",
+        "День недели",
+        "№ пары",
+        "Время",
+        "Дисциплина",
+        "Аудитория",
+        "Комментарий",
+    ]
+    for group_name in sorted(per_group_rows.keys()):
+        rows = _sort_group_rows(per_group_rows[group_name])
+        if not rows:
+            continue
+        sheet_title = _ensure_unique_sheet_name(group_name, used_names)
+        ws = wb.create_sheet(title=sheet_title)
+        ws.append([f"Группа: {group_name}", "", "", "", "", "", ""])
+        ws.append(headers)
+        header_row = ws[2]
+        header_fill = PatternFill("solid", fgColor="E3F2FD")
+        thin_side = Side(style="thin", color="CCCCCC")
+        border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+        for cell in header_row:
+            cell.font = Font(bold=True)
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = border
+        for row in rows:
+            ws.append(row)
+        ws.freeze_panes = "A3"
+        _auto_fit_columns(ws, max_width=35)
+        total_hours = per_group_hours.get(group_name, 0.0)
+        if total_hours:
+            ws.append([])
+            ws.append(["", "", "", "", "", "", f"Итого: {total_hours:.1f} часов"])
+            for cell in ws[ws.max_row]:
+                cell.font = Font(bold=True)
+
+
+def _add_teacher_sheets(
+    wb: Workbook,
+    per_teacher_rows: Dict[str, List[List[str]]],
+    per_teacher_hours: Dict[str, float],
+) -> None:
+    used_names = {ws.title for ws in wb.worksheets}
+    headers = [
+        "Дата",
+        "День недели",
+        "№ пары",
+        "Время",
+        "Дисциплина",
+        "Преподаватель",
+        "Аудитория",
+        "Комментарий",
+    ]
+    for teacher_name in sorted(per_teacher_rows.keys()):
+        rows = per_teacher_rows[teacher_name]
+        if not rows:
+            continue
+        sheet_title = _ensure_unique_sheet_name(teacher_name, used_names)
+        ws = wb.create_sheet(title=sheet_title)
+        ws.append([f"Преподаватель: {teacher_name}", "", "", "", "", "", "", ""])
+        ws.append(headers)
+        header_row = ws[2]
+        header_fill = PatternFill("solid", fgColor="FFF3E0")
+        thin_side = Side(style="thin", color="CCCCCC")
+        border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+        for cell in header_row:
+            cell.font = Font(bold=True)
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = border
+        for row in rows:
+            ws.append(row)
+        ws.freeze_panes = "A3"
+        _auto_fit_columns(ws, max_width=40)
+        total_hours = per_teacher_hours.get(teacher_name, 0.0)
+        if total_hours:
+            ws.append([])
+            ws.append(["", "", "", "", "", "", "", f"Итого: {total_hours:.1f} часов"])
+            for cell in ws[ws.max_row]:
+                cell.font = Font(bold=True)
+
+
+def create_group_workbook(
+    group_name: str,
+    rows: List[List[str]],
+    teacher_name: str,
+    semester_label: str,
+    total_hours: float,
+) -> Workbook:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Расписание"
+    ws.merge_cells("A1:H1")
+    ws["A1"] = f"Группа: {group_name}"
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A1"].alignment = Alignment(horizontal="center")
+    ws.merge_cells("A2:H2")
+    ws["A2"] = f"Преподаватель: {teacher_name} | {semester_label}"
+    ws["A2"].alignment = Alignment(horizontal="center")
+
+    headers = [
+        "Дата",
+        "День недели",
+        "№ пары",
+        "Время",
+        "Дисциплина",
+        "Преподаватель",
+        "Аудитория",
+        "Комментарий",
+    ]
+    ws.append(headers)
+    header_row = ws[3]
+    header_fill = PatternFill("solid", fgColor="E0F2F1")
+    thin_side = Side(style="thin", color="CCCCCC")
+    border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+    for cell in header_row:
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+
+    for row in rows:
+        data_row = row[:5] + [teacher_name] + row[5:]
+        ws.append(data_row)
+    ws.freeze_panes = "A4"
+    _auto_fit_columns(ws, max_width=35)
+    if total_hours:
+        ws.append([])
+        ws.append(["", "", "", "", "", "", "", f"Итого: {total_hours:.1f} часов"])
+        for cell in ws[ws.max_row]:
+            cell.font = Font(bold=True)
+    return wb
+
+
+def build_group_archive_bytes(
+    per_group_rows: Dict[str, List[List[str]]],
+    per_group_hours: Dict[str, float],
+    teacher_name: str,
+    semester_label: str,
+) -> Tuple[Optional[bytes], int]:
+    buffer = io.BytesIO()
+    added = 0
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for group_name in sorted(per_group_rows.keys()):
+            rows = _sort_group_rows(per_group_rows[group_name])
+            if not rows:
+                continue
+            total_hours = per_group_hours.get(group_name, 0.0)
+            wb = create_group_workbook(group_name, rows, teacher_name, semester_label, total_hours)
+            temp_stream = io.BytesIO()
+            wb.save(temp_stream)
+            archive.writestr(f"{_sanitize_filename(group_name)}.xlsx", temp_stream.getvalue())
+            added += 1
+    if added == 0:
+        return None, 0
+    buffer.seek(0)
+    return buffer.getvalue(), added
+
+
+def _save_group_workbooks(
+    per_group_rows: Dict[str, List[List[str]]],
+    teacher_name: str,
+    semester_label: str,
+    output_dir: Path,
+    base_stem: str,
+    per_group_hours: Dict[str, float],
+) -> List[Path]:
+    group_dir = output_dir / f"{_sanitize_filename(base_stem)}_groups"
+    group_dir.mkdir(parents=True, exist_ok=True)
+    saved_files: List[Path] = []
+    for group_name in sorted(per_group_rows.keys()):
+        rows = _sort_group_rows(per_group_rows[group_name])
+        if not rows:
+            continue
+        total_hours = per_group_hours.get(group_name, 0.0)
+        wb = create_group_workbook(group_name, rows, teacher_name, semester_label, total_hours)
+        filename = f"{_sanitize_filename(group_name)}.xlsx"
+        saved_files.append(save_workbook(wb, group_dir, filename))
+    return saved_files
+def _sort_group_rows(rows: List[List[str]]) -> List[List[str]]:
+    def parse_date(value: str) -> dt.date:
+        try:
+            return dt.datetime.strptime(value, "%d.%m.%Y").date()
+        except Exception:
+            return dt.date.min
+
+    def parse_time(value: str) -> dt.time:
+        match = re.search(r"(\d{1,2})[:.](\d{2})", value or "")
+        if match:
+            hour, minute = map(int, match.groups())
+            return dt.time(hour=hour, minute=minute)
+        return dt.time.min
+
+    return sorted(
+        rows,
+        key=lambda row: (
+            row[4] or "",
+            parse_date(row[0]),
+            parse_time(row[3]),
+        ),
+    )
+
+
+
 def save_workbook(wb: Workbook, output_dir: Path, filename: Optional[str]) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    if filename:
-        target = output_dir / filename
-    else:
-        target = output_dir / f"{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    wb.save(target)
-    return target
+    base_path = Path(filename) if filename else Path(f"{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+    stem = base_path.stem
+    attempt = 0
+    while True:
+        suffix = f"_{attempt}" if attempt else ""
+        target = output_dir / f"{stem}{suffix}.xlsx"
+        try:
+            wb.save(target)
+            return target
+        except PermissionError:
+            attempt += 1
+            if attempt > 5:
+                raise
 
 
 async def send_via_telegram(token: str, chat_id: str, file_path: Path, caption: str) -> None:
@@ -341,11 +696,30 @@ async def main_async() -> None:
         logger.warning("⚠️ За указанный период не найдено расписания.")
         return
 
-    workbook = build_excel_workbook(args.query, args.mode, semester_label, timetable)
+    (
+        workbook,
+        per_group_rows,
+        _,
+        total_hours,
+        per_group_hours,
+        _,
+    ) = build_excel_workbook(args.query, args.mode, semester_label, timetable)
     output_dir = Path(args.output)
     filename = args.filename or f"{_sanitize_sheet_name(args.query)}_{semester_label.replace(' ', '_')}.xlsx"
     file_path = save_workbook(workbook, output_dir, filename)
-    logger.info("💾 Файл сохранён: %s", file_path)
+    logger.info("💾 Файл сохранён: %s (суммарно %.1f часов)", file_path, total_hours)
+
+    if args.mode == "teacher" and args.split_groups and per_group_rows:
+        base_stem = Path(file_path).stem
+        split_files = _save_group_workbooks(
+            per_group_rows,
+            args.query,
+            semester_label,
+            output_dir,
+            base_stem,
+            per_group_hours,
+        )
+        logger.info("📚 Дополнительно сохранено %d файлов по группам в %s", len(split_files), output_dir / f"{_sanitize_filename(base_stem)}_groups")
 
     if args.send:
         token = args.bot_token or CONFIG_BOT_TOKEN

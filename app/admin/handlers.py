@@ -587,6 +587,10 @@ async def admin_user_details_callback(
         kbd_rows.append(
             [InlineKeyboardButton("✉️ Открыть чат", url=f"https://t.me/{username}")]
         )
+    else:
+        kbd_rows.append(
+            [InlineKeyboardButton("✉️ Открыть чат", url=f"tg://openmessage?user_id={user_id}")]
+        )
     kbd_rows.append(
         [InlineKeyboardButton("⬅️ Меню", callback_data=CALLBACK_ADMIN_USERS)]
     )

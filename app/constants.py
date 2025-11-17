@@ -37,6 +37,7 @@ class CallbackData(str, Enum):
     EXPORT_MENU = "export_menu"
     EXPORT_DAY_IMAGE = "export_day_image_"
     EXPORT_DAYS_IMAGES = "export_days_images"
+    EXPORT_SEMESTER = "export_semester"
     TEACHER_PHOTO = "teacher_photo_"
     TEACHER_PROFILE = "teacher_profile_"
     HELP_COMMAND_INLINE = "help_command_inline"
@@ -54,6 +55,7 @@ class CallbackPrefix(str, Enum):
     EXPORT_WEEK_IMAGE = "export_week_image_"
     EXPORT_WEEK_FILE = "export_week_file_"
     EXPORT_DAYS_IMAGES = "export_days_images_"
+    EXPORT_SEMESTER = "export_semester_"
     VIEW_CHANGED_SCHEDULE = "view_changed_schedule_"
     REFRESH_FROM_NOTIF = "refresh_from_notif_"
 
@@ -71,6 +73,7 @@ CALLBACK_DATA_EXPORT_WEEK_FILE = CallbackData.EXPORT_WEEK_FILE.value
 CALLBACK_DATA_EXPORT_MENU = CallbackData.EXPORT_MENU.value
 CALLBACK_DATA_EXPORT_DAY_IMAGE = CallbackData.EXPORT_DAY_IMAGE.value
 CALLBACK_DATA_EXPORT_DAYS_IMAGES = CallbackData.EXPORT_DAYS_IMAGES.value
+CALLBACK_DATA_EXPORT_SEMESTER = CallbackData.EXPORT_SEMESTER.value
 CALLBACK_DATA_TEACHER_PHOTO = CallbackData.TEACHER_PHOTO.value
 CALLBACK_DATA_TEACHER_PROFILE = CallbackData.TEACHER_PROFILE.value
 
