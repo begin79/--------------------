@@ -4,6 +4,7 @@ import hashlib
 import re
 import asyncio
 from io import BytesIO
+from datetime import timezone
 from dateutil.parser import parse as parse_date
 from typing import Optional, Tuple
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, Message, InlineQueryResultArticle, InputTextMessageContent, InputMediaPhoto
@@ -201,7 +202,7 @@ def _schedule_daily_notifications(context: ContextTypes.DEFAULT_TYPE, chat_id: i
     job_data = {"query": query, "mode": mode}
     context.job_queue.run_daily(
         __import__("app.jobs").jobs.daily_schedule_job,
-        time=datetime.time(utc_hour, minute, tzinfo=datetime.timezone.utc),
+        time=datetime.time(utc_hour, minute, tzinfo=timezone.utc),
         chat_id=chat_id,
         name=job_name,
         data=job_data,
@@ -1176,7 +1177,7 @@ async def set_notification_time(update: Update, context: ContextTypes.DEFAULT_TY
         job_data = {"query": user_data[CTX_DEFAULT_QUERY], "mode": user_data[CTX_DEFAULT_MODE]}
         context.job_queue.run_daily(
             __import__("app.jobs").jobs.daily_schedule_job,
-            time=datetime.time(utc_hour, minute, tzinfo=datetime.timezone.utc),
+            time=datetime.time(utc_hour, minute, tzinfo=timezone.utc),
             chat_id=chat_id,
             name=job_name,
             data=job_data,
@@ -1221,7 +1222,7 @@ async def toggle_daily_notifications_callback(update: Update, context: ContextTy
         job_data = {"query": user_data[CTX_DEFAULT_QUERY], "mode": user_data[CTX_DEFAULT_MODE]}
         context.job_queue.run_daily(
             __import__("app.jobs").jobs.daily_schedule_job,
-            time=datetime.time(utc_hour, minute, tzinfo=datetime.timezone.utc),
+            time=datetime.time(utc_hour, minute, tzinfo=timezone.utc),
             chat_id=chat_id,
             name=job_name,
             data=job_data,

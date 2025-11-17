@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import sys
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, PicklePersistence, ContextTypes, filters, InlineQueryHandler
 from telegram.error import TimedOut, Conflict, NetworkError
@@ -243,7 +243,7 @@ def build_app() -> Application:
                         
                         context.job_queue.run_daily(
                             daily_schedule_job,
-                            time=time(utc_hour, minute, tzinfo=datetime.timezone.utc),
+                            time=time(utc_hour, minute, tzinfo=timezone.utc),
                             chat_id=user_id,
                             name=job_name,
                             data=job_data,

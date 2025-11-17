@@ -37,6 +37,7 @@ CALLBACK_ADMIN_USERS_LIST = "admin_users_list"
 CALLBACK_ADMIN_USERS_PAGE_PREFIX = "admin_users_page_"
 CALLBACK_ADMIN_USER_DETAILS_PREFIX = "admin_user_details_"
 CALLBACK_ADMIN_MESSAGE_USER_PREFIX = "admin_message_user_"
+CALLBACK_ADMIN_PING_USER_PREFIX = "admin_ping_user_"
 CALLBACK_ADMIN_MESSAGE_CANCEL = "admin_message_cancel"
 CALLBACK_USER_REPLY_ADMIN_PREFIX = "user_reply_admin_"
 CALLBACK_USER_DISMISS_ADMIN_PREFIX = "user_dismiss_admin_"
@@ -581,6 +582,7 @@ async def admin_user_details_callback(
     kbd_rows = [
         [InlineKeyboardButton("🔄 Обновить", callback_data=f"{CALLBACK_ADMIN_USER_DETAILS_PREFIX}{user_id}")],
         [InlineKeyboardButton("✉️ Написать сообщение", callback_data=f"{CALLBACK_ADMIN_MESSAGE_USER_PREFIX}{user_id}")],
+        [InlineKeyboardButton("📨 Попросить откликнуться", callback_data=f"{CALLBACK_ADMIN_PING_USER_PREFIX}{user_id}")],
         [InlineKeyboardButton("⬅️ К списку", callback_data=f"{CALLBACK_ADMIN_USERS_PAGE_PREFIX}{back_page}")],
     ]
     if username != "без username":
@@ -637,6 +639,37 @@ async def admin_message_user_callback(
         await update.callback_query.answer()
     else:
         await update.message.reply_text(prompt, reply_markup=kbd, parse_mode=ParseMode.HTML)
+
+
+async def admin_ping_user_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+):
+    """Просит пользователя написать сообщение, чтобы открыть диалог"""
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        return
+
+    ping_text = (
+        "👋 <b>Сообщение от команды расписания</b>\n\n"
+        "Пожалуйста, напишите любое сообщение в ответ, чтобы мы могли связаться с вами по важному вопросу."
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=ping_text,
+            parse_mode=ParseMode.HTML
+        )
+        await update.callback_query.answer("Запрос отправлен пользователю.", show_alert=False)
+        await update.callback_query.message.reply_text(
+            "✅ Пользователь получил просьбу откликнуться."
+        )
+    except Forbidden:
+        await update.callback_query.answer("Пользователь недоступен/заблокировал бота.", show_alert=True)
+    except Exception as e:
+        logger.error(f"Ошибка при отправке ping пользователю {user_id}: {e}", exc_info=True)
+        await update.callback_query.answer("Не удалось отправить сообщение пользователю.", show_alert=True)
 
 
 async def admin_cancel_direct_message_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -699,10 +732,9 @@ async def handle_direct_message_input(update: Update, context: ContextTypes.DEFA
     ])
 
     user_message = (
-        "📬 <b>Сообщение от администратора</b>\n\n"
-        f"<b>{escape_html(admin_name)}</b> (@{escape_html(admin_username)}) написал:\n"
+        "📬 <b>Вам сообщение от команды расписания</b>\n\n"
         f"{escape_html(message_text)}\n\n"
-        "Вы можете ответить администратору или закрыть это уведомление."
+        "Ответьте на это сообщение, если нужно обсудить вопрос подробнее."
     )
 
     try:
@@ -1205,6 +1237,13 @@ async def admin_callback_router(update: Update, context: ContextTypes.DEFAULT_TY
             await update.callback_query.answer("Пользователь не найден", show_alert=True)
             return
         await admin_message_user_callback(update, context, user_id)
+    elif data.startswith(CALLBACK_ADMIN_PING_USER_PREFIX):
+        try:
+            user_id = int(data.replace(CALLBACK_ADMIN_PING_USER_PREFIX, "", 1))
+        except ValueError:
+            await update.callback_query.answer("Пользователь не найден", show_alert=True)
+            return
+        await admin_ping_user_callback(update, context, user_id)
     elif data == CALLBACK_ADMIN_MESSAGE_CANCEL:
         await admin_cancel_direct_message_callback(update, context)
     elif data.startswith(CALLBACK_ADMIN_CONFIRM_TOGGLE):
