@@ -509,10 +509,12 @@ async def admin_users_list_callback(
             await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
         except BadRequest as e:
             if "message is not modified" in str(e):
-                logger.debug("admin_users_list_callback: message already up to date.")
+                logger.debug("admin_users_list_callback: skip edit, content unchanged.")
                 await update.callback_query.answer("Список уже актуален.")
                 return
-            raise
+            logger.error(f"Ошибка обновления списка пользователей: {e}")
+            await update.callback_query.answer("Не удалось обновить список.", show_alert=True)
+            return
         await update.callback_query.answer()
     except Exception as e:
         logger.error(f"Ошибка при получении списка пользователей: {e}", exc_info=True)
