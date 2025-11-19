@@ -22,7 +22,7 @@ from .constants import (
     CALLBACK_DATA_PREV_SCHEDULE_PREFIX, CALLBACK_DATA_NEXT_SCHEDULE_PREFIX,
     CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX,
     CALLBACK_DATA_EXPORT_WEEK_IMAGE, CALLBACK_DATA_EXPORT_WEEK_FILE, CALLBACK_DATA_EXPORT_MENU,
-    CALLBACK_DATA_EXPORT_DAYS_IMAGES, CALLBACK_DATA_EXPORT_SEMESTЕР,
+    CALLBACK_DATA_EXPORT_DAYS_IMAGES, CALLBACK_DATA_EXPORT_SEMESTER,
     CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX,
     API_TYPE_GROUP, API_TYPE_TEACHER, GROUP_NAME_PATTERN, CallbackData,
 )
@@ -476,7 +476,8 @@ def get_default_reply_keyboard() -> ReplyKeyboardMarkup:
     """Создает стандартную клавиатуру с кнопками 'Старт' и 'Меню'"""
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton("Старт"), KeyboardButton("Меню")]
+            [KeyboardButton("/start"), KeyboardButton("Старт")],
+            [KeyboardButton("Меню")]
         ],
         resize_keyboard=True,
         one_time_keyboard=False
