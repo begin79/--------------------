@@ -18,9 +18,9 @@ from .http import make_request_with_retry
 
 logger = logging.getLogger(__name__)
 
-# Оптимизированные размеры кешей для быстрой работы
-schedule_cache = TTLCache(maxsize=1000, ttl=900)  # Увеличено для большего кеширования (15 минут)
-list_cache = TTLCache(maxsize=100, ttl=7200)  # Увеличено для большего кеширования (2 часа)
+# Увеличенные размеры кешей для работы с большим количеством пользователей
+schedule_cache = TTLCache(maxsize=500, ttl=600)  # Увеличено с 100 до 500
+list_cache = TTLCache(maxsize=50, ttl=3600)  # Увеличено с 10 до 50
 
 def parse_date_from_html(day_date_str: str) -> Optional[datetime.date]:
     """
@@ -78,9 +78,7 @@ async def get_schedule(date_str: str, query_value: str, entity_type: Literal["Gr
     except Exception as e:
         return None, f"Не удалось получить данные после нескольких попыток: {e}"
 
-    # Получаем текст из response (может быть из кеша или свежий)
-    html_text = response.text if hasattr(response, 'text') and response.text else str(response.content, 'utf-8', errors='ignore')
-    soup = BeautifulSoup(html_text, "html.parser")
+    soup = BeautifulSoup(response.text, "html.parser")
     # Ищем div с margin-bottom: 25px (с точкой с запятой или без)
     days_html = soup.find_all("div", style=lambda x: x and "margin-bottom: 25px" in x)
     if not days_html:
@@ -307,9 +305,6 @@ async def get_schedule_structured(date_str: str, query_value: str, entity_type: 
         else:
             logger.debug(f"⚠️ Не найден подходящий день для {date_str}. Возвращаем пустое расписание.")
             return None, None
-
-    if day_div is None:
-        return None, None
 
     pairs = []
     pairs_html = day_div.find_all("tr")

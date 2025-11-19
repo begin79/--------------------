@@ -148,7 +148,7 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         try:
             await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
         except BadRequest as e:
-            if "message is not modified" in str(e):
+            if "message is not modified" in str(e).lower():
                 logger.debug("admin_users_list_callback: message not modified, skipping edit.")
             else:
                 raise
@@ -508,7 +508,7 @@ async def admin_users_list_callback(
         try:
             await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
         except BadRequest as e:
-            if "message is not modified" in str(e):
+            if "message is not modified" in str(e).lower():
                 logger.debug("admin_users_list_callback: skip edit, content unchanged.")
                 await update.callback_query.answer("Список уже актуален.")
                 return
