@@ -613,15 +613,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get(CTX_REPLY_KEYBOARD_PINNED):
             return
         try:
+            hint_text = "⌨️ Кнопки «Старт» и «Меню» доступны ниже для быстрого доступа."
             msg = await context.bot.send_message(
                 chat_id=chat.id,
-                text="\u2060",  # невидимый символ, чтобы не мешать в переписке
-                reply_markup=reply_keyboard
+                text=hint_text,
+                reply_markup=reply_keyboard,
+                parse_mode=ParseMode.HTML,
+                disable_notification=True,
             )
-            context.user_data[CTX_REPLY_KEYBOARD_PINNED] = True
-            asyncio.create_task(
-                _delete_message_after_delay(context.bot, chat.id, msg.message_id, 0.5)
-            )
+            context.user_data[CTX_REPLY_KEYBOARD_PINNED] = msg.message_id
         except Exception as e:
             logger.debug(f"Не удалось установить ReplyKeyboard: {e}")
 
