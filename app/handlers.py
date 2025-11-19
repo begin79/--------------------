@@ -618,7 +618,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text="\u2060",  # невидимый символ, чтобы не мешать в переписке
                 reply_markup=reply_keyboard
             )
-            context.user_data[CTX_REPLY_KEYBOARD_PINNED] = msg.message_id
+            context.user_data[CTX_REPLY_KEYBOARD_PINNED] = True
+            asyncio.create_task(
+                _delete_message_after_delay(context.bot, chat.id, msg.message_id, 0.5)
+            )
         except Exception as e:
             logger.debug(f"Не удалось установить ReplyKeyboard: {e}")
 
