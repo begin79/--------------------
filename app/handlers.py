@@ -476,8 +476,7 @@ def get_default_reply_keyboard() -> ReplyKeyboardMarkup:
     """Создает стандартную клавиатуру с кнопками 'Старт' и 'Меню'"""
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton("/start"), KeyboardButton("Старт")],
-            [KeyboardButton("Меню")]
+            [KeyboardButton("Старт"), KeyboardButton("Меню")]
         ],
         resize_keyboard=True,
         one_time_keyboard=False
