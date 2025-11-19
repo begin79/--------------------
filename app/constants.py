@@ -57,7 +57,7 @@ class CallbackPrefix(str, Enum):
     EXPORT_DAYS_IMAGES = "export_days_images_"
     EXPORT_SEMESTER = "export_semester_"
     VIEW_CHANGED_SCHEDULE = "view_changed_schedule_"
-    REFRESH_FROM_NOTIF = "refresh_from_notif_"
+    NOTIFICATION_OPEN = "notification_open_schedule_"
 
 # Для обратной совместимости
 CALLBACK_DATA_MODE_STUDENT = CallbackData.MODE_STUDENT.value
@@ -84,6 +84,7 @@ CALLBACK_DATA_DATE_PREFIX = CallbackPrefix.DATE.value
 CALLBACK_DATA_DATE_TODAY = f"{CallbackPrefix.DATE.value}today"
 CALLBACK_DATA_DATE_TOMORROW = f"{CallbackPrefix.DATE.value}tomorrow"
 CALLBACK_DATA_DATE_MANUAL = f"{CallbackPrefix.DATE.value}manual"
+CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX = CallbackPrefix.NOTIFICATION_OPEN.value
 
 # Ключи контекста пользователя
 class UserContextKey(str, Enum):
@@ -99,6 +100,7 @@ class UserContextKey(str, Enum):
     DAILY_NOTIFICATIONS = "ctx_daily_notifications"
     NOTIFICATION_TIME = "ctx_notification_time"
     IS_BUSY = "ctx_is_busy"  # Для блокировки одновременных запросов
+    REPLY_KEYBOARD_PINNED = "ctx_reply_keyboard_pinned"
 
 # Для обратной совместимости
 CTX_MODE = UserContextKey.MODE.value
@@ -113,5 +115,6 @@ CTX_DEFAULT_MODE = UserContextKey.DEFAULT_MODE.value
 CTX_DAILY_NOTIFICATIONS = UserContextKey.DAILY_NOTIFICATIONS.value
 CTX_NOTIFICATION_TIME = UserContextKey.NOTIFICATION_TIME.value
 CTX_IS_BUSY = UserContextKey.IS_BUSY.value
+CTX_REPLY_KEYBOARD_PINNED = UserContextKey.REPLY_KEYBOARD_PINNED.value
 
 

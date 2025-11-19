@@ -60,10 +60,9 @@ async def daily_schedule_job(context: ContextTypes.DEFAULT_TYPE):
         else:
             msg = header + schedule
 
+    open_callback = f"{CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX}{job.data['mode']}_{target_day.strftime('%Y-%m-%d')}"
     kbd = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📅 Сегодня", callback_data=f"{CALLBACK_DATA_DATE_TODAY}_from_notif"),
-         InlineKeyboardButton("📅 Завтра", callback_data=f"{CALLBACK_DATA_DATE_TOMORROW}_from_notif")],
-        [InlineKeyboardButton("🔄 Обновить", callback_data=f"refresh_from_notif_{job.data['mode']}")],
+        [InlineKeyboardButton("📋 Перейти к расписанию", callback_data=open_callback)],
         [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
     ])
 

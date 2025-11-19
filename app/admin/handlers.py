@@ -37,7 +37,6 @@ CALLBACK_ADMIN_USERS_LIST = "admin_users_list"
 CALLBACK_ADMIN_USERS_PAGE_PREFIX = "admin_users_page_"
 CALLBACK_ADMIN_USER_DETAILS_PREFIX = "admin_user_details_"
 CALLBACK_ADMIN_MESSAGE_USER_PREFIX = "admin_message_user_"
-CALLBACK_ADMIN_PING_USER_PREFIX = "admin_ping_user_"
 CALLBACK_ADMIN_MESSAGE_CANCEL = "admin_message_cancel"
 CALLBACK_USER_REPLY_ADMIN_PREFIX = "user_reply_admin_"
 CALLBACK_USER_DISMISS_ADMIN_PREFIX = "user_dismiss_admin_"
@@ -506,7 +505,14 @@ async def admin_users_list_callback(
 
         kbd = InlineKeyboardMarkup(kbd_rows)
 
-        await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+        try:
+            await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+        except BadRequest as e:
+            if "message is not modified" in str(e):
+                logger.debug("admin_users_list_callback: message already up to date.")
+                await update.callback_query.answer("Список уже актуален.")
+                return
+            raise
         await update.callback_query.answer()
     except Exception as e:
         logger.error(f"Ошибка при получении списка пользователей: {e}", exc_info=True)
@@ -539,8 +545,6 @@ async def admin_user_details_callback(
     last_active = format_timestamp(user.get("last_active"))
     created_at = format_timestamp(user.get("created_at"))
 
-    history = db.get_user_activity(user_id, limit=5)
-
     username_display = (
         f"@{escape_html(username)}" if username != "без username" else "без username"
     )
@@ -564,31 +568,12 @@ async def admin_user_details_callback(
         text_lines.append("ℹ️ Пользователь скрывает свой username в Telegram.")
         text_lines.append("")
 
-    if history:
-        text_lines.append("📝 <b>Последние действия:</b>")
-        for entry in history:
-            timestamp = format_timestamp(entry.get("timestamp"))
-            action = entry.get("action") or "действие"
-            action_label = escape_html(action.replace("_", " ").capitalize())
-            details = entry.get("details")
-            if details:
-                details = details.strip()
-                if len(details) > 80:
-                    details = details[:77] + "…"
-                details = escape_html(details)
-                text_lines.append(f"   • {timestamp}: {action_label}\n     <i>{details}</i>")
-            else:
-                text_lines.append(f"   • {timestamp}: {action_label}")
-    else:
-        text_lines.append("📝 История действий отсутствует.")
-
     text = "\n".join(text_lines)
 
     back_page = context.user_data.get("admin_users_page", 0)
     kbd_rows = [
         [InlineKeyboardButton("🔄 Обновить", callback_data=f"{CALLBACK_ADMIN_USER_DETAILS_PREFIX}{user_id}")],
         [InlineKeyboardButton("✉️ Написать сообщение", callback_data=f"{CALLBACK_ADMIN_MESSAGE_USER_PREFIX}{user_id}")],
-        [InlineKeyboardButton("📨 Попросить откликнуться", callback_data=f"{CALLBACK_ADMIN_PING_USER_PREFIX}{user_id}")],
         [InlineKeyboardButton("⬅️ К списку", callback_data=f"{CALLBACK_ADMIN_USERS_PAGE_PREFIX}{back_page}")],
     ]
     if username != "без username":
@@ -650,48 +635,6 @@ async def admin_message_user_callback(
         await update.callback_query.answer()
     else:
         await update.message.reply_text(prompt, reply_markup=kbd, parse_mode=ParseMode.HTML)
-
-
-async def admin_ping_user_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    user_id: int,
-):
-    """Просит пользователя написать сообщение, чтобы открыть диалог"""
-    if not update.effective_user or not is_admin(update.effective_user.id):
-        return
-
-    admin_id = update.effective_user.id
-
-    ping_text = (
-        "👋 <b>Сообщение от команды расписания</b>\n\n"
-        "Пожалуйста, напишите любое сообщение в ответ, чтобы мы могли связаться с вами по важному вопросу."
-    )
-
-    dialogs = _get_dialog_storage(context)
-    dialogs[user_id] = {
-        "admin_id": admin_id,
-        "last_ping_at": datetime.utcnow().isoformat()
-    }
-
-    reply_states = _get_admin_reply_states(context)
-    reply_states[user_id] = {"admin_id": admin_id, "from_ping": True}
-
-    try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=ping_text,
-            parse_mode=ParseMode.HTML
-        )
-        await update.callback_query.answer("Запрос отправлен пользователю.", show_alert=False)
-        await update.callback_query.message.reply_text(
-            "✅ Пользователь получил просьбу откликнуться."
-        )
-    except Forbidden:
-        await update.callback_query.answer("Пользователь недоступен/заблокировал бота.", show_alert=True)
-    except Exception as e:
-        logger.error(f"Ошибка при отправке ping пользователю {user_id}: {e}", exc_info=True)
-        await update.callback_query.answer("Не удалось отправить сообщение пользователю.", show_alert=True)
 
 
 async def admin_cancel_direct_message_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1263,13 +1206,6 @@ async def admin_callback_router(update: Update, context: ContextTypes.DEFAULT_TY
             await update.callback_query.answer("Пользователь не найден", show_alert=True)
             return
         await admin_message_user_callback(update, context, user_id)
-    elif data.startswith(CALLBACK_ADMIN_PING_USER_PREFIX):
-        try:
-            user_id = int(data.replace(CALLBACK_ADMIN_PING_USER_PREFIX, "", 1))
-        except ValueError:
-            await update.callback_query.answer("Пользователь не найден", show_alert=True)
-            return
-        await admin_ping_user_callback(update, context, user_id)
     elif data == CALLBACK_ADMIN_MESSAGE_CANCEL:
         await admin_cancel_direct_message_callback(update, context)
     elif data.startswith(CALLBACK_ADMIN_CONFIRM_TOGGLE):

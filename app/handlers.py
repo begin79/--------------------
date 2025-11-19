@@ -15,14 +15,15 @@ from telegram.ext import ContextTypes
 from .constants import (
     CTX_MODE, CTX_SELECTED_DATE, CTX_AWAITING_MANUAL_DATE, CTX_LAST_QUERY, CTX_SCHEDULE_PAGES,
     CTX_CURRENT_PAGE_INDEX, CTX_AWAITING_DEFAULT_QUERY, CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE,
-    CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME, CTX_IS_BUSY,
+    CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME, CTX_IS_BUSY, CTX_REPLY_KEYBOARD_PINNED,
     CALLBACK_DATA_MODE_STUDENT, CALLBACK_DATA_MODE_TEACHER, CALLBACK_DATA_SETTINGS_MENU,
     CALLBACK_DATA_BACK_TO_START, CALLBACK_DATA_TOGGLE_DAILY,
     CALLBACK_DATA_CANCEL_INPUT, CALLBACK_DATA_DATE_TODAY, CALLBACK_DATA_DATE_TOMORROW,
     CALLBACK_DATA_PREV_SCHEDULE_PREFIX, CALLBACK_DATA_NEXT_SCHEDULE_PREFIX,
     CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX,
     CALLBACK_DATA_EXPORT_WEEK_IMAGE, CALLBACK_DATA_EXPORT_WEEK_FILE, CALLBACK_DATA_EXPORT_MENU,
-    CALLBACK_DATA_EXPORT_DAYS_IMAGES, CALLBACK_DATA_EXPORT_SEMESTER,
+    CALLBACK_DATA_EXPORT_DAYS_IMAGES, CALLBACK_DATA_EXPORT_SEMESTЕР,
+    CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX,
     API_TYPE_GROUP, API_TYPE_TEACHER, GROUP_NAME_PATTERN, CallbackData,
 )
 from .utils import escape_html
@@ -327,12 +328,12 @@ async def handle_user_dismiss_admin_message(
 ):
     """Пользователь закрыл уведомление администратора"""
     user_data = context.user_data
+    user_id = update.effective_user.id if update.effective_user else None
     if user_data.get("pending_admin_reply") == admin_id:
         user_data.pop("pending_admin_reply", None)
         reply_states = _get_admin_reply_states(context)
-        reply_states.pop(user_id, None)
-
-    user_id = update.effective_user.id if update.effective_user else None
+        if user_id is not None:
+            reply_states.pop(user_id, None)
     dialogs = _get_admin_dialog_storage(context)
     if user_id is not None:
         dialogs.pop(user_id, None)
@@ -535,7 +536,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for key in temp_keys:
         context.user_data.pop(key, None)
     for dynamic_key in list(context.user_data.keys()):
-        if dynamic_key.startswith("pending_query_") or dynamic_key.startswith("default_options_"):
+        if dynamic_key.startswith("pending_query_"):
             context.user_data.pop(dynamic_key, None)
 
     # Сохраняем информацию о пользователе в БД
@@ -604,6 +605,23 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Устанавливаем стандартную клавиатуру для всех сообщений
     reply_keyboard = get_default_reply_keyboard()
 
+    async def ensure_reply_keyboard():
+        """Гарантирует наличие ReplyKeyboard без лишних подсказок"""
+        chat = update.effective_chat
+        if not chat:
+            return
+        if context.user_data.get(CTX_REPLY_KEYBOARD_PINNED):
+            return
+        try:
+            msg = await context.bot.send_message(
+                chat_id=chat.id,
+                text="\u2060",  # невидимый символ, чтобы не мешать в переписке
+                reply_markup=reply_keyboard
+            )
+            context.user_data[CTX_REPLY_KEYBOARD_PINNED] = msg.message_id
+        except Exception as e:
+            logger.debug(f"Не удалось установить ReplyKeyboard: {e}")
+
     if update.message:
         # Устанавливаем клавиатуру в основном сообщении с обработкой сетевых ошибок
         max_retries = 3
@@ -634,15 +652,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"❌ [{user_id}] Неожиданная ошибка при отправке /start: {e}", exc_info=True)
                 break  # Для других ошибок не повторяем
 
-        # Устанавливаем ReplyKeyboardMarkup и оставляем его активным
-        try:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="⌨️ Кнопки 'Старт' и 'Меню' доступны ниже.",
-                reply_markup=reply_keyboard
-            )
-        except Exception as e:
-            logger.debug(f"Не удалось установить клавиатуру: {e}")
+        await ensure_reply_keyboard()
     elif update.callback_query:
         if not await safe_edit_message_text(update.callback_query, text, reply_markup=keyboard, parse_mode=ParseMode.HTML):
             # Если редактирование не удалось, пытаемся отправить новое сообщение
@@ -650,6 +660,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.callback_query.message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
             except Exception as e:
                 logger.debug(f"Не удалось отправить новое сообщение: {e}")
+        await ensure_reply_keyboard()
 
 async def help_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -837,6 +848,13 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
     username = update.effective_user.username or "без username"
     user_data = context.user_data
 
+    lowered = text.strip().lower()
+    if lowered in {"отмена", "cancel", "/cancel"}:
+        user_data.pop(CTX_AWAITING_DEFAULT_QUERY, None)
+        await update.message.reply_text("❌ Установка по умолчанию отменена.")
+        await settings_menu_callback(update, context)
+        return
+
     # Устанавливаем блокировку
     set_user_busy(user_data, True)
 
@@ -882,26 +900,19 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
                 await settings_menu_callback(update, context)
             return
 
-        # Если точного совпадения нет, предлагаем варианты на выбор кнопками (без текстового списка)
-        max_options = 30
+        # Если точного совпадения нет, показываем варианты в ReplyKeyboard (как при обычном поиске)
+        max_options = 20
         options = found[:max_options]
-        user_data[f"default_options_{mode}"] = options
+        hint = "🔎 Найдено несколько вариантов. Выберите нужный текстом:"
+        if len(found) > max_options:
+            hint = f"🔎 Найдено слишком много ({len(found)}). Показаны первые {max_options}:"
 
-        # Формируем клавиатуру сеткой по 3 в ряд
-        rows = []
-        row = []
-        for idx, option in enumerate(options):
-            row.append(InlineKeyboardButton(option, callback_data=f"choose_default_{mode}_{idx}"))
-            if len(row) == 3:
-                rows.append(row)
-                row = []
-        if row:
-            rows.append(row)
-        rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_DATA_SETTINGS_MENU)])
+        option_rows = [[KeyboardButton(option)] for option in options]
+        option_rows.append([KeyboardButton("Отмена")])
 
         await update.message.reply_text(
-            "🔎 Нашёл несколько вариантов. Выберите из списка ниже:",
-            reply_markup=InlineKeyboardMarkup(rows)
+            hint,
+            reply_markup=ReplyKeyboardMarkup(option_rows, resize_keyboard=True, one_time_keyboard=True)
         )
     finally:
         # Снимаем блокировку
@@ -1317,30 +1328,38 @@ async def handle_quick_date_callback(update: Update, context: ContextTypes.DEFAU
     finally:
         set_user_busy(user_data, False)
 
-async def handle_date_from_notification(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
-    if "today" in data:
-        date = datetime.date.today()
-    else:
-        date = datetime.date.today() + datetime.timedelta(days=1)
-    context.user_data[CTX_SELECTED_DATE] = date.strftime("%Y-%m-%d")
-    context.user_data[CTX_MODE] = context.user_data.get(CTX_DEFAULT_MODE, "student")
-    query = context.user_data.get(CTX_DEFAULT_QUERY)
-    if query:
-        await update.callback_query.answer("Загружаю расписание...")
-        await fetch_and_display_schedule(update, context, query)
-    else:
-        await update.callback_query.answer("Сначала установите группу в настройках!", show_alert=True)
+async def handle_notification_open_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Открывает расписание по кнопке из уведомления"""
+    if not update.callback_query:
+        return
 
-async def handle_refresh_from_notification(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
-    mode = data.replace("refresh_from_notif_", "")
-    context.user_data[CTX_MODE] = mode
-    context.user_data[CTX_SELECTED_DATE] = datetime.date.today().strftime("%Y-%m-%d")
-    query = context.user_data.get(CTX_DEFAULT_QUERY)
-    if query:
-        await update.callback_query.answer("🔄 Обновляю...")
-        await fetch_and_display_schedule(update, context, query)
-    else:
-        await update.callback_query.answer("Сначала установите группу в настройках!", show_alert=True)
+    payload = data.replace(CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX, "", 1)
+    try:
+        mode_part, date_str = payload.split("_", 1)
+    except ValueError:
+        await safe_answer_callback_query(update.callback_query, "Данные уведомления устарели.", show_alert=True)
+        return
+
+    try:
+        datetime.datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        await safe_answer_callback_query(update.callback_query, "Некорректная дата уведомления.", show_alert=True)
+        return
+
+    user_data = context.user_data
+    query = user_data.get(CTX_DEFAULT_QUERY) or user_data.get(CTX_LAST_QUERY)
+    if not query:
+        await safe_answer_callback_query(update.callback_query, "Сначала выберите группу или преподавателя в настройках.", show_alert=True)
+        await start_command(update, context)
+        return
+
+    mode = mode_part if mode_part in {"student", "teacher"} else (user_data.get(CTX_DEFAULT_MODE) or "student")
+    user_data[CTX_MODE] = mode
+    user_data[CTX_SELECTED_DATE] = date_str
+    user_data[CTX_LAST_QUERY] = query
+
+    await safe_answer_callback_query(update.callback_query, "📋 Открываю расписание...")
+    await fetch_and_display_schedule(update, context, query)
 
 async def schedule_navigation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2215,49 +2234,6 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prompt = "Теперь отправьте точное название группы:" if mode == "student" else "Теперь отправьте точное ФИО преподавателя:"
             kbd = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data=CALLBACK_DATA_CANCEL_INPUT)]])
             await safe_edit_message_text(update.callback_query, prompt, reply_markup=kbd)
-        elif data.startswith("choose_default_"):
-            payload = data.replace("choose_default_", "", 1)
-            if "_" not in payload:
-                await settings_menu_callback(update, context)
-            else:
-                mode, idx_str = payload.rsplit("_", 1)
-                try:
-                    idx = int(idx_str)
-                except ValueError:
-                    idx = -1
-                options = user_data.get(f"default_options_{mode}", [])
-                if 0 <= idx < len(options):
-                    chosen = options[idx]
-                    user_data.pop(f"default_options_{mode}", None)
-                    user_data.pop(CTX_AWAITING_DEFAULT_QUERY, None)
-
-                    # Проверяем, новый ли это пользователь (первый запуск)
-                    is_new_user = user_data.get(CTX_DEFAULT_QUERY) is None
-
-                    await _apply_default_selection(update, context, chosen, mode, source="callback")
-
-                    if is_new_user:
-                        # Для новых пользователей показываем сообщение об успешной установке
-                        mode_text = "группу" if mode == "student" else "преподавателя"
-                        await safe_edit_message_text(
-                            update.callback_query,
-                            f"✅ Вы установили {mode_text}: <b>{escape_html(chosen)}</b>",
-                            parse_mode=ParseMode.HTML
-                        )
-                        # Удаляем сообщение через 3 секунды и показываем главное меню
-                        msg_to_delete = update.callback_query.message
-                        asyncio.create_task(_delete_message_after_delay(context.bot, msg_to_delete.chat_id, msg_to_delete.message_id, 3.0))
-                        # Показываем главное меню через 3.5 секунды (после удаления сообщения)
-                        await asyncio.sleep(3.5)
-                        await start_command(update, context)
-                    else:
-                        await safe_edit_message_text(
-                            update.callback_query,
-                            f"✅ Установлено по умолчанию: <b>{escape_html(chosen)}</b>",
-                            parse_mode=ParseMode.HTML
-                        )
-                else:
-                    await safe_edit_message_text(update.callback_query, "Не удалось определить выбранный вариант.")
             await settings_menu_callback(update, context)
         elif data == "reset_settings":
             # Подтверждение сброса
@@ -2324,16 +2300,14 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_notification_time_menu(update, context)
         elif data.startswith("set_time_"):
             await set_notification_time(update, context, data)
-        elif data.startswith(f"{CALLBACK_DATA_DATE_TODAY}_from_notif") or data.startswith(f"{CALLBACK_DATA_DATE_TOMORROW}_from_notif"):
-            await handle_date_from_notification(update, context, data)
+        elif data.startswith(CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX):
+            await handle_notification_open_callback(update, context, data)
         elif data.startswith(f"{CALLBACK_DATA_DATE_TODAY}_quick_") or data.startswith(f"{CALLBACK_DATA_DATE_TOMORROW}_quick_"):
             # Быстрый доступ из главного меню
             await handle_quick_date_callback(update, context, data)
         elif data.startswith(f"{CALLBACK_DATA_DATE_TODAY}_") or data.startswith(f"{CALLBACK_DATA_DATE_TOMORROW}_"):
             # Быстрый доступ из расписания
             await handle_quick_date_callback(update, context, data)
-        elif data.startswith("refresh_from_notif_"):
-            await handle_refresh_from_notification(update, context, data)
         elif data.startswith((CALLBACK_DATA_PREV_SCHEDULE_PREFIX, CALLBACK_DATA_NEXT_SCHEDULE_PREFIX, CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX)):
             await schedule_navigation_callback(update, context)
         elif data == CALLBACK_DATA_CANCEL_INPUT:
@@ -2342,7 +2316,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_data.pop(CTX_IS_BUSY, None)
             # Очищаем pending queries
             for key in list(user_data.keys()):
-                if key.startswith("pending_query_") or key.startswith("default_options_"):
+                if key.startswith("pending_query_"):
                     user_data.pop(key, None)
             try:
                 await safe_edit_message_text(update.callback_query, "Действие отменено.")
