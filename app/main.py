@@ -95,6 +95,102 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# Вынесенные функции из build_app для улучшения производительности
+
+async def text_message_with_admin_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка текстовых сообщений с проверкой админских команд"""
+    if not update.effective_user:
+        return
+
+    user_id = update.effective_user.id
+
+    # Проверяем, ожидает ли админ ввода
+    from .admin.utils import is_admin
+    from .admin.handlers import (
+        handle_maintenance_message_input, handle_admin_id_input,
+        handle_remove_admin_id_input, handle_broadcast_input,
+        handle_user_search_input, handle_direct_message_input
+    )
+
+    if is_admin(user_id):
+        if context.user_data.get('awaiting_maintenance_msg'):
+            await handle_maintenance_message_input(update, context)
+            return
+        elif context.user_data.get('awaiting_admin_id'):
+            await handle_admin_id_input(update, context)
+            return
+        elif context.user_data.get('awaiting_remove_admin_id'):
+            await handle_remove_admin_id_input(update, context)
+            return
+        elif context.user_data.get('awaiting_broadcast'):
+            await handle_broadcast_input(update, context)
+            return
+        elif context.user_data.get('awaiting_user_search'):
+            await handle_user_search_input(update, context)
+            return
+        elif context.user_data.get('awaiting_direct_message'):
+            await handle_direct_message_input(update, context)
+            return
+
+    # Обычная обработка сообщений
+    await handle_text_message(update, context)
+
+async def initialize_active_users(context: ContextTypes.DEFAULT_TYPE):
+    """Инициализирует список активных пользователей из БД при старте бота и восстанавливает задачи уведомлений"""
+    from .database import db
+    from .constants import CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE, CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME
+    from .jobs import daily_schedule_job
+
+    try:
+        users_with_query = db.get_users_with_default_query()
+        if 'active_users' not in context.bot_data:
+            context.bot_data['active_users'] = set()
+        if 'users_data_cache' not in context.bot_data:
+            context.bot_data['users_data_cache'] = {}
+
+        restored_jobs = 0
+        for user_data in users_with_query:
+            user_id = user_data['user_id']
+            context.bot_data['active_users'].add(user_id)
+            context.bot_data['users_data_cache'][user_id] = {
+                CTX_DEFAULT_QUERY: user_data['default_query'],
+                CTX_DEFAULT_MODE: user_data['default_mode'],
+                CTX_DAILY_NOTIFICATIONS: bool(user_data.get('daily_notifications', False)),
+                CTX_NOTIFICATION_TIME: user_data.get('notification_time', '21:00')
+            }
+
+            # Восстанавливаем задачи уведомлений для пользователей с включенными уведомлениями
+            if user_data.get('daily_notifications', False) and user_data.get('default_query') and user_data.get('default_mode'):
+                try:
+                    time_str = user_data.get('notification_time', '21:00')
+                    hour, minute = map(int, time_str.split(":"))
+                    # МСК (UTC+3) -> UTC: вычитаем 3 часа
+                    utc_hour = (hour - 3) % 24
+
+                    job_name = f"daily_schedule_{user_id}"
+                    job_data = {
+                        "query": user_data['default_query'],
+                        "mode": user_data['default_mode']
+                    }
+
+                    context.job_queue.run_daily(
+                        daily_schedule_job,
+                        time=time(utc_hour, minute, tzinfo=timezone.utc),
+                        chat_id=user_id,
+                        name=job_name,
+                        data=job_data,
+                    )
+                    restored_jobs += 1
+                    logger.debug(f"✅ Восстановлена задача уведомлений для пользователя {user_id} на {time_str} (UTC: {utc_hour:02d}:{minute:02d})")
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось восстановить задачу уведомлений для пользователя {user_id}: {e}")
+
+        logger.info(f"✅ Инициализировано {len(context.bot_data['active_users'])} активных пользователей для проверки изменений расписания")
+        if restored_jobs > 0:
+            logger.info(f"✅ Восстановлено {restored_jobs} задач ежедневных уведомлений")
+    except Exception as e:
+        logger.error(f"Ошибка инициализации активных пользователей: {e}", exc_info=True)
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Специальная обработка для Conflict - не выводим полный traceback
     if isinstance(context.error, Conflict):
@@ -160,36 +256,6 @@ def build_app() -> Application:
     )
     from .admin.utils import is_admin
 
-    async def text_message_with_admin_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not update.effective_user:
-            return
-
-        user_id = update.effective_user.id
-
-        # Проверяем, ожидает ли админ ввода
-        if is_admin(user_id):
-            if context.user_data.get('awaiting_maintenance_msg'):
-                await handle_maintenance_message_input(update, context)
-                return
-            elif context.user_data.get('awaiting_admin_id'):
-                await handle_admin_id_input(update, context)
-                return
-            elif context.user_data.get('awaiting_remove_admin_id'):
-                await handle_remove_admin_id_input(update, context)
-                return
-            elif context.user_data.get('awaiting_broadcast'):
-                await handle_broadcast_input(update, context)
-                return
-            elif context.user_data.get('awaiting_user_search'):
-                await handle_user_search_input(update, context)
-                return
-            elif context.user_data.get('awaiting_direct_message'):
-                await handle_direct_message_input(update, context)
-                return
-
-        # Обычная обработка сообщений
-        await handle_text_message(update, context)
-
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_with_admin_check))
     app.add_handler(CallbackQueryHandler(callback_router))
     app.add_error_handler(error_handler)
@@ -201,63 +267,6 @@ def build_app() -> Application:
         app.job_queue.run_repeating(
             check_schedule_changes_job, interval=5400, first=60, name="check_schedule_changes"
         )
-
-    # Инициализация активных пользователей при старте
-    async def initialize_active_users(context: ContextTypes.DEFAULT_TYPE):
-        """Инициализирует список активных пользователей из БД при старте бота и восстанавливает задачи уведомлений"""
-        from .database import db
-        from .constants import CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE, CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME
-        from .jobs import daily_schedule_job
-
-        try:
-            users_with_query = db.get_users_with_default_query()
-            if 'active_users' not in context.bot_data:
-                context.bot_data['active_users'] = set()
-            if 'users_data_cache' not in context.bot_data:
-                context.bot_data['users_data_cache'] = {}
-
-            restored_jobs = 0
-            for user_data in users_with_query:
-                user_id = user_data['user_id']
-                context.bot_data['active_users'].add(user_id)
-                context.bot_data['users_data_cache'][user_id] = {
-                    CTX_DEFAULT_QUERY: user_data['default_query'],
-                    CTX_DEFAULT_MODE: user_data['default_mode'],
-                    CTX_DAILY_NOTIFICATIONS: bool(user_data.get('daily_notifications', False)),
-                    CTX_NOTIFICATION_TIME: user_data.get('notification_time', '21:00')
-                }
-                
-                # Восстанавливаем задачи уведомлений для пользователей с включенными уведомлениями
-                if user_data.get('daily_notifications', False) and user_data.get('default_query') and user_data.get('default_mode'):
-                    try:
-                        time_str = user_data.get('notification_time', '21:00')
-                        hour, minute = map(int, time_str.split(":"))
-                        # МСК (UTC+3) -> UTC: вычитаем 3 часа
-                        utc_hour = (hour - 3) % 24
-                        
-                        job_name = f"daily_schedule_{user_id}"
-                        job_data = {
-                            "query": user_data['default_query'],
-                            "mode": user_data['default_mode']
-                        }
-                        
-                        context.job_queue.run_daily(
-                            daily_schedule_job,
-                            time=time(utc_hour, minute, tzinfo=timezone.utc),
-                            chat_id=user_id,
-                            name=job_name,
-                            data=job_data,
-                        )
-                        restored_jobs += 1
-                        logger.debug(f"✅ Восстановлена задача уведомлений для пользователя {user_id} на {time_str} (UTC: {utc_hour:02d}:{minute:02d})")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Не удалось восстановить задачу уведомлений для пользователя {user_id}: {e}")
-
-            logger.info(f"✅ Инициализировано {len(context.bot_data['active_users'])} активных пользователей для проверки изменений расписания")
-            if restored_jobs > 0:
-                logger.info(f"✅ Восстановлено {restored_jobs} задач ежедневных уведомлений")
-        except Exception as e:
-            logger.error(f"Ошибка инициализации активных пользователей: {e}", exc_info=True)
 
     # Добавляем задачу инициализации при старте (выполнится сразу после запуска)
     if app.job_queue:

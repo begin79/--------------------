@@ -117,4 +117,22 @@ CTX_NOTIFICATION_TIME = UserContextKey.NOTIFICATION_TIME.value
 CTX_IS_BUSY = UserContextKey.IS_BUSY.value
 CTX_REPLY_KEYBOARD_PINNED = UserContextKey.REPLY_KEYBOARD_PINNED.value
 
+# Магические строки - режимы работы
+MODE_STUDENT = BotMode.STUDENT.value  # "student"
+MODE_TEACHER = BotMode.TEACHER.value  # "teacher"
+
+# Магические строки - текстовые описания
+ENTITY_GROUP = "группу"
+ENTITY_GROUPS = "группы"
+ENTITY_GROUP_GENITIVE = "группы"
+ENTITY_TEACHER = "преподавателя"
+ENTITY_TEACHER_GENITIVE = "преподавателя"
+ENTITY_STUDENT = "студента"
+
+# Магические строки - значения по умолчанию
+DEFAULT_NOTIFICATION_TIME = "21:00"
+
+# Магические строки - префиксы для задач
+JOB_PREFIX_DAILY_SCHEDULE = "daily_schedule_"
+
 

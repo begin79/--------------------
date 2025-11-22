@@ -7,6 +7,7 @@ from io import BytesIO
 from datetime import timezone
 from dateutil.parser import parse as parse_date
 from typing import Optional, Tuple
+from contextlib import contextmanager
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, Message, InlineQueryResultArticle, InputTextMessageContent, InputMediaPhoto
 from telegram.constants import ParseMode, ChatAction
 from telegram.error import BadRequest, NetworkError, TimedOut, Forbidden
@@ -25,6 +26,9 @@ from .constants import (
     CALLBACK_DATA_EXPORT_DAYS_IMAGES, CALLBACK_DATA_EXPORT_SEMESTER,
     CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX,
     API_TYPE_GROUP, API_TYPE_TEACHER, GROUP_NAME_PATTERN, CallbackData,
+    MODE_STUDENT, MODE_TEACHER, ENTITY_GROUP, ENTITY_GROUPS, ENTITY_GROUP_GENITIVE,
+    ENTITY_TEACHER, ENTITY_TEACHER_GENITIVE, ENTITY_STUDENT,
+    DEFAULT_NOTIFICATION_TIME, JOB_PREFIX_DAILY_SCHEDULE,
 )
 from .utils import escape_html
 from .schedule import get_schedule, search_entities
@@ -113,6 +117,23 @@ def set_user_busy(user_data: dict, busy: bool = True):
     else:
         user_data.pop(CTX_IS_BUSY, None)
 
+@contextmanager
+def user_busy_context(user_data: dict):
+    """
+    Context Manager для автоматического управления блокировкой пользователя.
+
+    Использование:
+        with user_busy_context(context.user_data):
+            # Делаем долгую работу
+            await do_heavy_task()
+        # Блокировка снимется автоматически
+    """
+    set_user_busy(user_data, True)
+    try:
+        yield
+    finally:
+        set_user_busy(user_data, False)
+
 
 class ExportProgress:
     """Текстовый индикатор прогресса для долгих операций экспорта"""
@@ -184,7 +205,7 @@ def _schedule_daily_notifications(context: ContextTypes.DEFAULT_TYPE, chat_id: i
     if not context.job_queue or not chat_id:
         return
 
-    job_name = f"daily_schedule_{chat_id}"
+    job_name = f"{JOB_PREFIX_DAILY_SCHEDULE}{chat_id}"
     for job in context.job_queue.get_jobs_by_name(job_name):
         try:
             job.schedule_removal()
@@ -196,12 +217,12 @@ def _schedule_daily_notifications(context: ContextTypes.DEFAULT_TYPE, chat_id: i
     if not query or not mode:
         return
 
-    time_str = user_data.get(CTX_NOTIFICATION_TIME, "21:00") or "21:00"
+    time_str = user_data.get(CTX_NOTIFICATION_TIME, DEFAULT_NOTIFICATION_TIME) or DEFAULT_NOTIFICATION_TIME
     try:
         hour, minute = map(int, time_str.split(":"))
     except ValueError:
         hour, minute = 21, 0
-        time_str = "21:00"
+        time_str = DEFAULT_NOTIFICATION_TIME
         user_data[CTX_NOTIFICATION_TIME] = time_str
 
     utc_hour = (hour - 3) % 24
@@ -232,7 +253,7 @@ async def _apply_default_selection(
     user_data[CTX_DEFAULT_QUERY] = chosen
     user_data[CTX_DEFAULT_MODE] = mode
     if not user_data.get(CTX_NOTIFICATION_TIME):
-        user_data[CTX_NOTIFICATION_TIME] = "21:00"
+        user_data[CTX_NOTIFICATION_TIME] = DEFAULT_NOTIFICATION_TIME
 
     notifications_were_enabled = bool(user_data.get(CTX_DAILY_NOTIFICATIONS, False))
     user_data[CTX_DAILY_NOTIFICATIONS] = True
@@ -265,10 +286,10 @@ async def _apply_default_selection(
             CTX_DEFAULT_QUERY: chosen,
             CTX_DEFAULT_MODE: mode,
             CTX_DAILY_NOTIFICATIONS: True,
-            CTX_NOTIFICATION_TIME: user_data.get(CTX_NOTIFICATION_TIME, "21:00")
+            CTX_NOTIFICATION_TIME: user_data.get(CTX_NOTIFICATION_TIME, DEFAULT_NOTIFICATION_TIME)
         }
 
-    time_str = user_data.get(CTX_NOTIFICATION_TIME, "21:00")
+    time_str = user_data.get(CTX_NOTIFICATION_TIME, DEFAULT_NOTIFICATION_TIME)
     notif_line = (
         f"🔔 Ежедневные уведомления уже были включены на {time_str}."
         if notifications_were_enabled
@@ -437,21 +458,39 @@ def load_user_data_from_db(user_id: int, user_data: dict):
 
 def save_user_data_to_db(user_id: int, username: Optional[str], first_name: Optional[str],
                          last_name: Optional[str], user_data: dict):
-    """Сохраняет данные пользователя из user_data в БД"""
+    """Сохраняет данные пользователя из user_data в БД (только если данные изменились)"""
     try:
+        # 1. Получаем текущее состояние
+        existing = db.get_user(user_id)
+
+        # 2. Данные для сохранения
+        new_query = user_data.get(CTX_DEFAULT_QUERY)
+        new_mode = user_data.get(CTX_DEFAULT_MODE)
+        new_notif = bool(user_data.get(CTX_DAILY_NOTIFICATIONS, False))
+        new_time = user_data.get(CTX_NOTIFICATION_TIME, '21:00')
+
+        # 3. Сравниваем. Если пользователь уже есть и данные те же — выходим.
+        if existing:
+            if (existing.get('default_query') == new_query and
+                existing.get('default_mode') == new_mode and
+                bool(existing.get('daily_notifications')) == new_notif and
+                existing.get('notification_time') == new_time):
+                return  # ИЗМЕНЕНИЙ НЕТ
+
+        # 4. Пишем только если есть изменения
         db.save_user(
             user_id=user_id,
             username=username,
             first_name=first_name,
             last_name=last_name,
-            default_query=user_data.get(CTX_DEFAULT_QUERY),
-            default_mode=user_data.get(CTX_DEFAULT_MODE),
-            daily_notifications=user_data.get(CTX_DAILY_NOTIFICATIONS, False),
-            notification_time=user_data.get(CTX_NOTIFICATION_TIME, '21:00')
+            default_query=new_query,
+            default_mode=new_mode,
+            daily_notifications=new_notif,
+            notification_time=new_time
         )
         logger.debug(f"Данные пользователя {user_id} сохранены в БД")
     except Exception as e:
-        logger.error(f"Ошибка сохранения данных пользователя {user_id} в БД: {e}")
+        logger.error(f"Ошибка БД: {e}")
 
 def detect_query_type(text: str) -> Optional[Tuple[str, str]]:
     """
@@ -715,7 +754,7 @@ async def settings_menu_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     query = user_data.get(CTX_DEFAULT_QUERY, "Не задано")
     is_daily = user_data.get(CTX_DAILY_NOTIFICATIONS, False)
-    notification_time = user_data.get(CTX_NOTIFICATION_TIME, "21:00")
+    notification_time = user_data.get(CTX_NOTIFICATION_TIME, DEFAULT_NOTIFICATION_TIME)
     logger.info(f"📊 [{user_id}] Текущие настройки: группа/преподаватель='{query}', уведомления={'вкл' if is_daily else 'выкл'}, время={notification_time}")
     text = f"<b>⚙️ Настройки</b>\n\nТекущая группа/преподаватель:\n<code>{escape_html(query)}</code>\n\nВремя уведомлений: <code>{notification_time}</code>"
     kbd = InlineKeyboardMarkup([
@@ -800,28 +839,47 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         load_user_data_from_db(user_id, user_data)
 
     # Умный холодный старт: если режим не выбран, пытаемся определить по тексту
+    # ВАЖНО: для новых пользователей без установленной группы/преподавателя не устанавливаем default_query автоматически
     if not user_data.get(CTX_MODE) and not user_data.get(CTX_AWAITING_DEFAULT_QUERY) and not user_data.get(CTX_AWAITING_MANUAL_DATE):
+        # Проверяем, есть ли у пользователя установленная группа/преподаватель
+        has_default_query = bool(user_data.get(CTX_DEFAULT_QUERY))
+
         detected = detect_query_type(text)
         if detected:
             mode, query_text = detected
-            mode_text = "группу" if mode == "student" else "преподавателя"
+            mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
             user_data[CTX_MODE] = mode
 
-            # Предлагаем пользователю подтвердить выбор
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Да, это правильный режим", callback_data=f"confirm_mode_{mode}_{hashlib.md5(query_text.encode()).hexdigest()[:8]}"),
-                    InlineKeyboardButton("❌ Нет, выбрать другой", callback_data=CALLBACK_DATA_BACK_TO_START)
-                ]
-            ])
-            user_data[f"pending_query_{mode}"] = query_text
-            await update.message.reply_text(
-                f"🔍 Я определил, что вы ищете {mode_text}: <b>{escape_html(query_text)}</b>\n\n"
-                f"Правильно?",
-                reply_markup=keyboard,
-                parse_mode=ParseMode.HTML
-            )
-            return
+            # Если у пользователя нет установленной группы/преподавателя, предлагаем сначала выбрать режим через /start
+            if not has_default_query:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎓 Я студент", callback_data=CALLBACK_DATA_MODE_STUDENT)],
+                    [InlineKeyboardButton("🧑‍🏫 Я преподаватель", callback_data=CALLBACK_DATA_MODE_TEACHER)],
+                    [InlineKeyboardButton("❓ Не знаю", callback_data=CallbackData.HELP_COMMAND_INLINE.value)]
+                ])
+                await update.message.reply_text(
+                    f"🔍 Я вижу, что вы ищете {mode_text}: <b>{escape_html(query_text)}</b>\n\n"
+                    f"Для начала работы с ботом выберите, кто вы:",
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
+                )
+                return
+            else:
+                # Для существующих пользователей предлагаем подтвердить выбор
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Да, это правильный режим", callback_data=f"confirm_mode_{mode}_{hashlib.md5(query_text.encode()).hexdigest()[:8]}"),
+                        InlineKeyboardButton("❌ Нет, выбрать другой", callback_data=CALLBACK_DATA_BACK_TO_START)
+                    ]
+                ])
+                user_data[f"pending_query_{mode}"] = query_text
+                await update.message.reply_text(
+                    f"🔍 Я определил, что вы ищете {mode_text}: <b>{escape_html(query_text)}</b>\n\n"
+                    f"Правильно?",
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
+                )
+                return
         else:
             # Не удалось определить, предлагаем выбрать режим
             keyboard = InlineKeyboardMarkup([
@@ -863,10 +921,10 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
 
     try:
         mode = user_data[CTX_MODE]
-        mode_text = "группу" if mode == "student" else "преподавателя"
+        mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
         logger.info(f"⚙️ [{user_id}] @{username} → Устанавливает {mode_text} по умолчанию: '{text}'")
 
-        api_type = API_TYPE_GROUP if mode == "student" else API_TYPE_TEACHER
+        api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
         found, err = await search_entities(text, api_type)
 
         if found:
@@ -892,11 +950,12 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
             if is_new_user:
                 # Для новых пользователей показываем сообщение об успешной установке и главное меню
                 success_msg = await update.message.reply_text(
-                    f"✅ Вы установили {mode_text}: <b>{escape_html(match)}</b>",
+                    f"✅ Вы установили {mode_text}: <b>{escape_html(match)}</b>\n\n"
+                    f"Теперь вы будете получать ежедневные уведомления о расписании.",
                     parse_mode=ParseMode.HTML
                 )
-                # Удаляем сообщение через 3 секунды
-                asyncio.create_task(_delete_message_after_delay(context.bot, success_msg.chat_id, success_msg.message_id, 3.0))
+                # Удаляем сообщение через 5 секунд
+                asyncio.create_task(_delete_message_after_delay(context.bot, success_msg.chat_id, success_msg.message_id, 5.0))
                 # Показываем главное меню
                 await start_command(update, context)
             else:
@@ -956,12 +1015,12 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
             return
 
         mode = user_data[CTX_MODE]
-        mode_text = "группу" if mode == "student" else "преподавателя"
+        mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
         logger.info(f"🔍 [{user_id}] @{username} → Ищет {mode_text}: '{text}'")
 
         await update.message.reply_chat_action(ChatAction.TYPING)
-        api_type = API_TYPE_GROUP if mode == "student" else API_TYPE_TEACHER
-        p_name, s_name, verb, not_found = ("группы", "группа", "Найдена", "Группы не найдены.") if mode == 'student' else ("преподаватели", "преподаватель", "Найден", "Преподаватели не найдены.")
+        api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
+        p_name, s_name, verb, not_found = (ENTITY_GROUPS, "группа", "Найдена", "Группы не найдены.") if mode == MODE_STUDENT else ("преподаватели", "преподаватель", "Найден", "Преподаватели не найдены.")
 
         found, err = await search_entities(text, api_type)
 
@@ -1013,15 +1072,14 @@ async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAU
 
     try:
         mode = user_data.get(CTX_MODE)
-        api_type = API_TYPE_GROUP if mode == "student" else API_TYPE_TEACHER
+        api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
         date = user_data.setdefault(CTX_SELECTED_DATE, datetime.date.today().strftime("%Y-%m-%d"))
         user_data[CTX_LAST_QUERY] = query
 
-        mode_text = "группы" if mode == "student" else "преподавателя"
+        mode_text = ENTITY_GROUP_GENITIVE if mode == MODE_STUDENT else ENTITY_TEACHER_GENITIVE
         logger.debug(f"📥 [{user_id}] @{username} → Загружаю расписание {mode_text} '{query}' на {date}")
 
         # Показываем индикатор загрузки
-        loading_msg = None
         if update.callback_query:
             try:
                 await safe_edit_message_text(update.callback_query, "⏳ Загружаю расписание...", reply_markup=None)
@@ -1090,8 +1148,8 @@ async def send_schedule_with_pagination(update: Update, context: ContextTypes.DE
 
     # Проверяем mode
     if not mode:
-        mode = "student"  # Значение по умолчанию
-        user_data[CTX_MODE] = mode
+        mode = MODE_STUDENT  # Значение по умолчанию
+    user_data[CTX_MODE] = mode
 
     # Проверяем индекс страницы
     if idx < 0:
@@ -1106,7 +1164,7 @@ async def send_schedule_with_pagination(update: Update, context: ContextTypes.DE
         username = update.effective_user.username or "без username"
         logger.debug(f"📋 [{user_id}] @{username} → Отображение расписания '{query}' (страница {idx + 1}/{len(pages)})")  # Изменено с INFO на DEBUG
 
-    entity = "группы" if mode == "student" else "преподавателя"
+    entity = ENTITY_GROUP_GENITIVE if mode == MODE_STUDENT else ENTITY_TEACHER_GENITIVE
     # Улучшенное форматирование расписания
     header = f"📅 <b>Расписание для {entity}</b>\n"
     header += f"👤 <b>{escape_html(query)}</b>\n"
@@ -1196,7 +1254,7 @@ async def set_notification_time(update: Update, context: ContextTypes.DEFAULT_TY
     # Обновляем задачу уведомлений, если она активна
     chat_id = update.effective_chat.id
     if user_data.get(CTX_DAILY_NOTIFICATIONS) and context.job_queue and user_data.get(CTX_DEFAULT_QUERY):
-        job_name = f"daily_schedule_{chat_id}"
+        job_name = f"{JOB_PREFIX_DAILY_SCHEDULE}{chat_id}"
         # Удаляем старую задачу
         for job in context.job_queue.get_jobs_by_name(job_name):
             job.schedule_removal()
@@ -1237,7 +1295,7 @@ async def toggle_daily_notifications_callback(update: Update, context: ContextTy
         await safe_answer_callback_query(update.callback_query, "Сначала установите группу/преподавателя!", show_alert=True)
         return
 
-    job_name = f"daily_schedule_{chat_id}"
+    job_name = f"{JOB_PREFIX_DAILY_SCHEDULE}{chat_id}"
     for job in context.job_queue.get_jobs_by_name(job_name):
         job.schedule_removal()
 
@@ -1246,7 +1304,7 @@ async def toggle_daily_notifications_callback(update: Update, context: ContextTy
         await safe_answer_callback_query(update.callback_query, "Ежедневные уведомления отключены.")
     else:
         user_data[CTX_DAILY_NOTIFICATIONS] = True
-        time_str = user_data.get(CTX_NOTIFICATION_TIME, "21:00")
+        time_str = user_data.get(CTX_NOTIFICATION_TIME, DEFAULT_NOTIFICATION_TIME)
         hour, minute = map(int, time_str.split(":"))
         utc_hour = (hour - 3) % 24
         job_data = {"query": user_data[CTX_DEFAULT_QUERY], "mode": user_data[CTX_DEFAULT_MODE]}
@@ -1268,7 +1326,6 @@ async def toggle_daily_notifications_callback(update: Update, context: ContextTy
 async def handle_quick_date_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     """Обработка быстрых кнопок 'Сегодня/Завтра' из главного меню или расписания"""
     user_data = context.user_data
-    user_id = update.effective_user.id if update.effective_user else None
 
     # Определяем дату
     if "today" in data:
@@ -1297,7 +1354,7 @@ async def handle_quick_date_callback(update: Update, context: ContextTypes.DEFAU
 
     # Если режим не найден, используем сохраненный или дефолтный
     if not mode:
-        mode = user_data.get(CTX_MODE) or user_data.get(CTX_DEFAULT_MODE) or "student"
+        mode = user_data.get(CTX_MODE) or user_data.get(CTX_DEFAULT_MODE) or MODE_STUDENT
 
     # Получаем query
     query = user_data.get(CTX_LAST_QUERY) or user_data.get(CTX_DEFAULT_QUERY)
@@ -1314,7 +1371,7 @@ async def handle_quick_date_callback(update: Update, context: ContextTypes.DEFAU
     await safe_answer_callback_query(update.callback_query, f"📅 Загружаю расписание на {date_text}...")
 
     # Загружаем расписание
-    api_type = API_TYPE_GROUP if mode == "student" else API_TYPE_TEACHER
+    api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
     set_user_busy(user_data, True)
     try:
         pages, err = await safe_get_schedule(date.strftime("%Y-%m-%d"), query, api_type)
@@ -1356,7 +1413,7 @@ async def handle_notification_open_callback(update: Update, context: ContextType
         await start_command(update, context)
         return
 
-    mode = mode_part if mode_part in {"student", "teacher"} else (user_data.get(CTX_DEFAULT_MODE) or "student")
+    mode = mode_part if mode_part in {MODE_STUDENT, MODE_TEACHER} else (user_data.get(CTX_DEFAULT_MODE) or MODE_STUDENT)
     user_data[CTX_MODE] = mode
     user_data[CTX_SELECTED_DATE] = date_str
     user_data[CTX_LAST_QUERY] = query
@@ -1417,7 +1474,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # Сначала пробуем определить автоматически через detect_query_type
     query_type_result = detect_query_type(query_text)
     if query_type_result:
-        entity_type = API_TYPE_GROUP if query_type_result[0] == "student" else API_TYPE_TEACHER
+        entity_type = API_TYPE_GROUP if query_type_result[0] == MODE_STUDENT else API_TYPE_TEACHER
         search_text = query_type_result[1]
         found, err = await search_entities(search_text, entity_type)
         # Если не нашли с определенным типом, пробуем противоположный
@@ -1453,26 +1510,26 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.inline_query.answer([], cache_time=5, is_personal=True)
             return
 
-        logger.info(f"✅ [{user_id}] Inline поиск: найдено {len(found)} результатов (тип: {entity_type})")
-        today = datetime.date.today().strftime("%Y-%m-%d")
-        results = []
-        for name in found[:10]:
-            pages, _ = await safe_get_schedule(today, name, entity_type, timeout=10.0)  # Меньший таймаут для inline запросов
-            schedule_text = pages[0] if pages else "Расписание не найдено"
-            title_prefix = "Группа" if entity_type == API_TYPE_GROUP else "Преподаватель"
-            content = InputTextMessageContent(
-                f"{title_prefix}: <b>{escape_html(name)}</b>\n\n{schedule_text}", parse_mode=ParseMode.HTML
+    logger.info(f"✅ [{user_id}] Inline поиск: найдено {len(found)} результатов (тип: {entity_type})")
+    today = datetime.date.today().strftime("%Y-%m-%d")
+    results = []
+    for name in found[:10]:
+        pages, _ = await safe_get_schedule(today, name, entity_type, timeout=10.0)  # Меньший таймаут для inline запросов
+        schedule_text = pages[0] if pages else "Расписание не найдено"
+        title_prefix = "Группа" if entity_type == API_TYPE_GROUP else "Преподаватель"
+        content = InputTextMessageContent(
+            f"{title_prefix}: <b>{escape_html(name)}</b>\n\n{schedule_text}", parse_mode=ParseMode.HTML
+        )
+        results.append(
+            InlineQueryResultArticle(
+                id=f"{entity_type}_{hash(name)}_{today}",
+                title=f"{name} — сегодня",
+                description=f"Расписание на сегодня ({title_prefix.lower()})",
+                input_message_content=content,
             )
-            results.append(
-                InlineQueryResultArticle(
-                    id=f"{entity_type}_{hash(name)}_{today}",
-                    title=f"{name} — сегодня",
-                    description=f"Расписание на сегодня ({title_prefix.lower()})",
-                    input_message_content=content,
-                )
-            )
+        )
 
-        await update.inline_query.answer(results, cache_time=30, is_personal=True)
+    await update.inline_query.answer(results, cache_time=30, is_personal=True)
 
 async def show_export_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     """Показать меню экспорта"""
@@ -1503,13 +1560,13 @@ async def show_export_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, d
         user_data["export_back_pages"] = user_data[CTX_SCHEDULE_PAGES]
         user_data["export_back_page_index"] = user_data.get(CTX_CURRENT_PAGE_INDEX, 0)
 
-    entity_label = "преподавателя" if mode == "teacher" else "группы"
+    entity_label = ENTITY_TEACHER_GENITIVE if mode == MODE_TEACHER else ENTITY_GROUP_GENITIVE
 
     text = f"📤 <b>Экспорт расписания для {entity_label}:</b>\n<code>{escape_html(entity_name)}</code>\n\nВыберите формат экспорта:"
 
     kbd_rows = []
 
-    if mode == "student":
+    if mode == MODE_STUDENT:
         # Для студентов: неделя картинкой, неделя файлом (PDF), по дням картинками
         kbd_rows.extend([
             [InlineKeyboardButton("🖼 Неделя (картинка)", callback_data=f"{CALLBACK_DATA_EXPORT_WEEK_IMAGE}_{mode}_{query_hash}")],
@@ -1561,272 +1618,287 @@ def parse_semester_callback_data(data: str) -> Tuple[Optional[str], Optional[str
     except Exception:
         return None, None, None
 
+async def setup_export_process(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    data: str,
+    prefix: str,
+    progress_text: str = "Генерирую...",
+    parse_weeks: bool = False
+) -> Tuple[Optional[str], Optional[str], Optional[str], int, bool]:
+    """
+    Вспомогательная функция для настройки процесса экспорта.
+    Парсит данные, проверяет busy-статус, наличие данных в кэше.
+    НЕ устанавливает блокировку - это делается через user_busy_context в вызывающем коде.
+
+    Args:
+        update: Update объект
+        context: Context объект
+        data: Callback data строка
+        prefix: Префикс callback data (например, CALLBACK_DATA_EXPORT_WEEK_IMAGE)
+        progress_text: Текст для ответа на callback query
+        parse_weeks: Если True, парсит _week0/_week1 из конца data
+
+    Returns:
+        Tuple[Optional[str], Optional[str], Optional[str], int, bool]:
+        - mode: режим работы (MODE_STUDENT или MODE_TEACHER)
+        - query_hash: хеш запроса
+        - entity_name: название группы/преподавателя
+        - week_offset: смещение недели (0 или 1)
+        - success: успешность операции
+    """
+    if not update.callback_query:
+        return None, None, None, 0, False
+
+    user_data = context.user_data
+    week_offset = 0
+    clean_data = data
+
+    # Встроенный парсинг недели
+    if parse_weeks:
+        if data.endswith("_week0"):
+            week_offset = 0
+            clean_data = data[:-6]  # Убираем "_week0"
+        elif data.endswith("_week1"):
+            week_offset = 1
+            clean_data = data[:-6]  # Убираем "_week1"
+
+    # 1. Парсинг данных
+    mode, query_hash = parse_export_callback_data(clean_data, prefix)
+    if not mode or not query_hash:
+        await safe_answer_callback_query(update.callback_query, "Ошибка данных", show_alert=True)
+        return None, None, None, 0, False
+
+    # 2. Получение имени сущности
+    entity_name = user_data.get(f"export_{mode}_{query_hash}")
+    if not entity_name:
+        await safe_answer_callback_query(update.callback_query, "Ошибка: данные не найдены", show_alert=True)
+        return None, None, None, 0, False
+
+    # 3. Проверка блокировки
+    if check_user_busy(user_data):
+        await safe_answer_callback_query(update.callback_query, "⏳ Пожалуйста, подождите...")
+        return None, None, None, 0, False
+
+    # 4. Ответ на callback (блокировку ставим через context manager в вызывающем коде)
+    await safe_answer_callback_query(update.callback_query, progress_text)
+
+    return mode, query_hash, entity_name, week_offset, True
+
 async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     """Экспорт расписания на неделю картинкой"""
-    if not update.callback_query:
-        return
-
     user_id = update.effective_user.id
     username = update.effective_user.username or "без username"
     logger.info(f"📤 [{user_id}] @{username} → Экспорт расписания: неделя (картинка)")
 
-    # Парсим callback data с возможным week_offset
-    week_offset = 0
-    if data.endswith("_week0"):
-        week_offset = 0
-        data = data[:-6]  # Убираем "_week0"
-    elif data.endswith("_week1"):
-        week_offset = 1
-        data = data[:-6]  # Убираем "_week1"
-
-    mode, query_hash = parse_export_callback_data(data, CALLBACK_DATA_EXPORT_WEEK_IMAGE)
-    if not mode or not query_hash:
-        await safe_answer_callback_query(update.callback_query, "Ошибка данных", show_alert=True)
+    # Используем setup_export_process с парсингом недели
+    mode, query_hash, entity_name, week_offset, success = await setup_export_process(
+        update, context, data, CALLBACK_DATA_EXPORT_WEEK_IMAGE, "Генерирую картинку...", parse_weeks=True
+    )
+    if not success:
         return
 
+    # Используем контекстный менеджер для гарантированного снятия блокировки
     user_data = context.user_data
-    entity_name = user_data.get(f"export_{mode}_{query_hash}")
-    if not entity_name:
-        await safe_answer_callback_query(update.callback_query, "Ошибка: данные не найдены", show_alert=True)
-        return
+    with user_busy_context(user_data):
+        progress = ExportProgress(update.callback_query.message)
+        await progress.start("⏳ Подготавливаю расписание...")
 
-    if check_user_busy(user_data):
-        await safe_answer_callback_query(update.callback_query, "⏳ Уже генерирую другой экспорт, подождите...")
-        return
+        try:
+            entity_type = API_TYPE_TEACHER if mode == MODE_TEACHER else API_TYPE_GROUP
+            from .export import get_week_schedule_structured, generate_schedule_image
 
-    # Отвечаем на callback сразу, чтобы избежать timeout
-    await safe_answer_callback_query(update.callback_query, "Генерирую картинку...")
+            # Получаем расписание для выбранной недели
+            week_schedule = await get_week_schedule_structured(entity_name, entity_type, week_offset=week_offset)
 
-    # Устанавливаем блокировку
-    set_user_busy(user_data, True)
-    progress = ExportProgress(update.callback_query.message)
-    await progress.start("⏳ Подготавливаю расписание...")
+            # Если week_offset не был указан (0) и на текущей неделе нет пар, проверяем следующую неделю
+            if week_offset == 0 and not week_schedule:
+                next_week_schedule = await get_week_schedule_structured(entity_name, entity_type, week_offset=1)
+                if next_week_schedule:
+                    # На следующей неделе есть пары - спрашиваем у пользователя
+                    today = datetime.date.today()
+                    days_since_monday = today.weekday()
+                    if days_since_monday == 6:
+                        current_monday = today + datetime.timedelta(days=1)
+                    else:
+                        current_monday = today - datetime.timedelta(days=days_since_monday)
+                    next_monday = current_monday + datetime.timedelta(days=7)
 
-    try:
-        entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
-        from .export import get_week_schedule_structured, generate_schedule_image
+                    text = (
+                        f"📅 На текущей неделе ({current_monday.strftime('%d.%m.%Y')} - {(current_monday + datetime.timedelta(days=5)).strftime('%d.%m.%Y')}) "
+                        f"нет занятий.\n\n"
+                        f"На следующей неделе ({next_monday.strftime('%d.%m.%Y')} - {(next_monday + datetime.timedelta(days=5)).strftime('%d.%m.%Y')}) "
+                        f"есть занятия.\n\n"
+                        f"Какую неделю экспортировать?"
+                    )
+                    kbd = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📅 Текущая неделя", callback_data=f"{CALLBACK_DATA_EXPORT_WEEK_IMAGE}_{mode}_{query_hash}_week0")],
+                        [InlineKeyboardButton("📅 Следующая неделя", callback_data=f"{CALLBACK_DATA_EXPORT_WEEK_IMAGE}_{mode}_{query_hash}_week1")],
+                        [InlineKeyboardButton("⬅️ Назад", callback_data=f"{CALLBACK_DATA_EXPORT_MENU}_{mode}_{query_hash}")]
+                    ])
+                    await update.callback_query.message.edit_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+                    await progress.finish("ℹ️ Выберите неделю.", delete_after=0)
+                    return
 
-        # Получаем расписание для выбранной недели
-        week_schedule = await get_week_schedule_structured(entity_name, entity_type, week_offset=week_offset)
-
-        # Если week_offset не был указан (0) и на текущей неделе нет пар, проверяем следующую неделю
-        if week_offset == 0 and not week_schedule:
-            next_week_schedule = await get_week_schedule_structured(entity_name, entity_type, week_offset=1)
-            if next_week_schedule:
-                # На следующей неделе есть пары - спрашиваем у пользователя
-                today = datetime.date.today()
-                days_since_monday = today.weekday()
-                if days_since_monday == 6:
-                    current_monday = today + datetime.timedelta(days=1)
-                else:
-                    current_monday = today - datetime.timedelta(days=days_since_monday)
-                next_monday = current_monday + datetime.timedelta(days=7)
-
-                text = (
-                    f"📅 На текущей неделе ({current_monday.strftime('%d.%m.%Y')} - {(current_monday + datetime.timedelta(days=5)).strftime('%d.%m.%Y')}) "
-                    f"нет занятий.\n\n"
-                    f"На следующей неделе ({next_monday.strftime('%d.%m.%Y')} - {(next_monday + datetime.timedelta(days=5)).strftime('%d.%m.%Y')}) "
-                    f"есть занятия.\n\n"
-                    f"Какую неделю экспортировать?"
+            # Если нет расписания для выбранной недели
+            if not week_schedule:
+                await update.callback_query.message.reply_text(
+                    "❌ На выбранной неделе нет занятий."
                 )
-                kbd = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📅 Текущая неделя", callback_data=f"{CALLBACK_DATA_EXPORT_WEEK_IMAGE}_{mode}_{query_hash}_week0")],
-                    [InlineKeyboardButton("📅 Следующая неделя", callback_data=f"{CALLBACK_DATA_EXPORT_WEEK_IMAGE}_{mode}_{query_hash}_week1")],
-                    [InlineKeyboardButton("⬅️ Назад", callback_data=f"{CALLBACK_DATA_EXPORT_MENU}_{mode}_{query_hash}")]
-                ])
-                await update.callback_query.message.edit_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
-                await progress.finish("ℹ️ Выберите неделю.", delete_after=0)
-                set_user_busy(user_data, False)
+                await progress.finish("⚠️ На выбранной неделе нет занятий.", delete_after=0)
                 return
 
-        # Если нет расписания для выбранной недели
-        if not week_schedule:
-            await update.callback_query.message.reply_text(
-                "❌ На выбранной неделе нет занятий."
-            )
-            await progress.finish("⚠️ На выбранной неделе нет занятий.", delete_after=0)
-            set_user_busy(user_data, False)
-            return
+            await progress.update(60, "🖼 Рисую изображение...")
+            # Генерируем картинку (это может занять время)
+            img_bytes = await generate_schedule_image(week_schedule, entity_name, entity_type)
 
-        await progress.update(60, "🖼 Рисую изображение...")
-        # Генерируем картинку (это может занять время)
-        img_bytes = await generate_schedule_image(week_schedule, entity_name, entity_type)
+            if img_bytes:
+                entity_label = ENTITY_TEACHER_GENITIVE if mode == MODE_TEACHER else ENTITY_GROUP_GENITIVE
+                # Сохраняем состояние для возврата (используем текущую дату из расписания)
+                user_data["export_back_mode"] = mode
+                user_data["export_back_query"] = entity_name
+                # Сохраняем текущую дату из расписания, если она есть
+                export_date = user_data.get(CTX_SELECTED_DATE)
+                if not export_date:
+                    export_date = datetime.date.today().strftime("%Y-%m-%d")
+                user_data["export_back_date"] = export_date
+                # Также сохраняем страницы расписания для быстрого возврата
+                if user_data.get(CTX_SCHEDULE_PAGES):
+                    user_data["export_back_pages"] = user_data[CTX_SCHEDULE_PAGES]
+                    user_data["export_back_page_index"] = user_data.get(CTX_CURRENT_PAGE_INDEX, 0)
 
-        if img_bytes:
-            entity_label = "преподавателя" if mode == "teacher" else "группы"
-            # Сохраняем состояние для возврата (используем текущую дату из расписания)
-            user_data["export_back_mode"] = mode
-            user_data["export_back_query"] = entity_name
-            # Сохраняем текущую дату из расписания, если она есть
-            export_date = user_data.get(CTX_SELECTED_DATE)
-            if not export_date:
-                export_date = datetime.date.today().strftime("%Y-%m-%d")
-            user_data["export_back_date"] = export_date
-            # Также сохраняем страницы расписания для быстрого возврата
-            if user_data.get(CTX_SCHEDULE_PAGES):
-                user_data["export_back_pages"] = user_data[CTX_SCHEDULE_PAGES]
-                user_data["export_back_page_index"] = user_data.get(CTX_CURRENT_PAGE_INDEX, 0)
-
-            back_kbd = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад к расписанию", callback_data=CallbackData.BACK_TO_SCHEDULE.value)],
-                [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
-            ])
-            await update.callback_query.message.reply_photo(
-                photo=img_bytes,
-                caption=f"📅 Расписание на неделю для {entity_label}: {escape_html(entity_name)}",
-                reply_markup=back_kbd
-            )
-            await progress.finish()
-        else:
-            from .export import format_week_schedule_text
-            text = format_week_schedule_text(week_schedule, entity_name, entity_type)
-            await update.callback_query.message.reply_text(text, parse_mode=ParseMode.HTML)
-            await progress.finish("ℹ️ Отправил текст вместо картинки.", delete_after=0)
-    except Exception as e:
-        logger.error(f"Ошибка при генерации картинки: {e}", exc_info=True)
-        try:
-            await update.callback_query.message.reply_text(
-                "❌ Произошла ошибка при генерации картинки. Попробуйте позже."
-            )
-        except Exception:
-            pass
-        await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
-    finally:
-        # Снимаем блокировку
-        set_user_busy(user_data, False)
+                back_kbd = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Назад к расписанию", callback_data=CallbackData.BACK_TO_SCHEDULE.value)],
+                    [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+                ])
+                await update.callback_query.message.reply_photo(
+                    photo=img_bytes,
+                    caption=f"📅 Расписание на неделю для {entity_label}: {escape_html(entity_name)}",
+                    reply_markup=back_kbd
+                )
+                await progress.finish()
+            else:
+                from .export import format_week_schedule_text
+                text = format_week_schedule_text(week_schedule, entity_name, entity_type)
+                await update.callback_query.message.reply_text(text, parse_mode=ParseMode.HTML)
+                await progress.finish("ℹ️ Отправил текст вместо картинки.", delete_after=0)
+        except Exception as e:
+            logger.error(f"Ошибка при генерации картинки: {e}", exc_info=True)
+            try:
+                await update.callback_query.message.reply_text(
+                    "❌ Произошла ошибка при генерации картинки. Попробуйте позже."
+                )
+            except Exception:
+                pass
+            await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
+        # Блокировка снимется автоматически через context manager
 
 async def export_week_schedule_file(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     """Экспорт расписания на неделю файлом"""
-    if not update.callback_query:
-        return
-
     user_id = update.effective_user.id
     username = update.effective_user.username or "без username"
     logger.info(f"📤 [{user_id}] @{username} → Экспорт расписания: неделя (PDF)")
 
-    # Парсим callback data с возможным week_offset
-    week_offset = 0
-    if data.endswith("_week0"):
-        week_offset = 0
-        data = data[:-6]  # Убираем "_week0"
-    elif data.endswith("_week1"):
-        week_offset = 1
-        data = data[:-6]  # Убираем "_week1"
-
-    mode, query_hash = parse_export_callback_data(data, CALLBACK_DATA_EXPORT_WEEK_FILE)
-    if not mode or not query_hash:
-        await safe_answer_callback_query(update.callback_query, "Ошибка данных", show_alert=True)
+    # Используем setup_export_process с парсингом недели
+    mode, query_hash, entity_name, week_offset, success = await setup_export_process(
+        update, context, data, CALLBACK_DATA_EXPORT_WEEK_FILE, "Генерирую файл...", parse_weeks=True
+    )
+    if not success:
         return
 
+    # Используем контекстный менеджер для гарантированного снятия блокировки
     user_data = context.user_data
-    entity_name = user_data.get(f"export_{mode}_{query_hash}")
-    if not entity_name:
-        await safe_answer_callback_query(update.callback_query, "Ошибка: данные не найдены", show_alert=True)
-        return
+    with user_busy_context(user_data):
+        progress = ExportProgress(update.callback_query.message)
+        await progress.start("⏳ Подготавливаю расписание...")
 
-    if check_user_busy(user_data):
-        await safe_answer_callback_query(update.callback_query, "⏳ Уже генерирую другой экспорт, подождите...")
-        return
+        try:
+            entity_type = API_TYPE_TEACHER if mode == MODE_TEACHER else API_TYPE_GROUP
+            from .export import get_week_schedule_structured, generate_week_schedule_file
 
-    # Отвечаем на callback сразу
-    await safe_answer_callback_query(update.callback_query, "Генерирую файл...")
+            # Получаем расписание для выбранной недели
+            week_schedule = await get_week_schedule_structured(entity_name, entity_type, week_offset=week_offset)
 
-    # Устанавливаем блокировку
-    set_user_busy(user_data, True)
-    progress = ExportProgress(update.callback_query.message)
-    await progress.start("⏳ Подготавливаю расписание...")
+            # Если week_offset не был указан (0) и на текущей неделе нет пар, проверяем следующую неделю
+            if week_offset == 0 and not week_schedule:
+                next_week_schedule = await get_week_schedule_structured(entity_name, entity_type, week_offset=1)
+                if next_week_schedule:
+                    # На следующей неделе есть пары - спрашиваем у пользователя
+                    today = datetime.date.today()
+                    days_since_monday = today.weekday()
+                    if days_since_monday == 6:
+                        current_monday = today + datetime.timedelta(days=1)
+                    else:
+                        current_monday = today - datetime.timedelta(days=days_since_monday)
+                    next_monday = current_monday + datetime.timedelta(days=7)
 
-    try:
-        entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
-        from .export import get_week_schedule_structured, generate_week_schedule_file
+                    text = (
+                        f"📅 На текущей неделе ({current_monday.strftime('%d.%m.%Y')} - {(current_monday + datetime.timedelta(days=5)).strftime('%d.%m.%Y')}) "
+                        f"нет занятий.\n\n"
+                        f"На следующей неделе ({next_monday.strftime('%d.%m.%Y')} - {(next_monday + datetime.timedelta(days=5)).strftime('%d.%m.%Y')}) "
+                        f"есть занятия.\n\n"
+                        f"Какую неделю экспортировать?"
+                    )
+                    kbd = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📅 Текущая неделя", callback_data=f"{CALLBACK_DATA_EXPORT_WEEK_FILE}_{mode}_{query_hash}_week0")],
+                        [InlineKeyboardButton("📅 Следующая неделя", callback_data=f"{CALLBACK_DATA_EXPORT_WEEK_FILE}_{mode}_{query_hash}_week1")],
+                        [InlineKeyboardButton("⬅️ Назад", callback_data=f"{CALLBACK_DATA_EXPORT_MENU}_{mode}_{query_hash}")]
+                    ])
+                    await update.callback_query.message.edit_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+                    await progress.finish("ℹ️ Выберите неделю.", delete_after=0)
+                    return
 
-        # Получаем расписание для выбранной недели
-        week_schedule = await get_week_schedule_structured(entity_name, entity_type, week_offset=week_offset)
-
-        # Если week_offset не был указан (0) и на текущей неделе нет пар, проверяем следующую неделю
-        if week_offset == 0 and not week_schedule:
-            next_week_schedule = await get_week_schedule_structured(entity_name, entity_type, week_offset=1)
-            if next_week_schedule:
-                # На следующей неделе есть пары - спрашиваем у пользователя
-                today = datetime.date.today()
-                days_since_monday = today.weekday()
-                if days_since_monday == 6:
-                    current_monday = today + datetime.timedelta(days=1)
-                else:
-                    current_monday = today - datetime.timedelta(days=days_since_monday)
-                next_monday = current_monday + datetime.timedelta(days=7)
-
-                text = (
-                    f"📅 На текущей неделе ({current_monday.strftime('%d.%m.%Y')} - {(current_monday + datetime.timedelta(days=5)).strftime('%d.%m.%Y')}) "
-                    f"нет занятий.\n\n"
-                    f"На следующей неделе ({next_monday.strftime('%d.%m.%Y')} - {(next_monday + datetime.timedelta(days=5)).strftime('%d.%m.%Y')}) "
-                    f"есть занятия.\n\n"
-                    f"Какую неделю экспортировать?"
+            # Если нет расписания для выбранной недели
+            if not week_schedule:
+                await update.callback_query.message.reply_text(
+                    "❌ На выбранной неделе нет занятий."
                 )
-                kbd = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📅 Текущая неделя", callback_data=f"{CALLBACK_DATA_EXPORT_WEEK_FILE}_{mode}_{query_hash}_week0")],
-                    [InlineKeyboardButton("📅 Следующая неделя", callback_data=f"{CALLBACK_DATA_EXPORT_WEEK_FILE}_{mode}_{query_hash}_week1")],
-                    [InlineKeyboardButton("⬅️ Назад", callback_data=f"{CALLBACK_DATA_EXPORT_MENU}_{mode}_{query_hash}")]
-                ])
-                await update.callback_query.message.edit_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
-                await progress.finish("ℹ️ Выберите неделю.", delete_after=0)
-                set_user_busy(user_data, False)
+                await progress.finish("⚠️ На выбранной неделе нет занятий.", delete_after=0)
                 return
+            await progress.update(60, "📄 Формирую PDF...")
+            file_bytes = await generate_week_schedule_file(week_schedule, entity_name, entity_type)
 
-        # Если нет расписания для выбранной недели
-        if not week_schedule:
-            await update.callback_query.message.reply_text(
-                "❌ На выбранной неделе нет занятий."
-            )
-            await progress.finish("⚠️ На выбранной неделе нет занятий.", delete_after=0)
-            set_user_busy(user_data, False)
-            return
-        await progress.update(60, "📄 Формирую PDF...")
-        file_bytes = await generate_week_schedule_file(week_schedule, entity_name, entity_type)
+            if file_bytes:
+                entity_label = ENTITY_TEACHER_GENITIVE if mode == MODE_TEACHER else ENTITY_GROUP_GENITIVE
+                filename = f"raspisanie_{entity_name.replace(' ', '_')[:30]}.pdf"
+                # Сохраняем состояние для возврата (используем текущую дату из расписания)
+                user_data["export_back_mode"] = mode
+                user_data["export_back_query"] = entity_name
+                # Сохраняем текущую дату из расписания, если она есть
+                export_date = user_data.get(CTX_SELECTED_DATE)
+                if not export_date:
+                    export_date = datetime.date.today().strftime("%Y-%m-%d")
+                user_data["export_back_date"] = export_date
+                # Также сохраняем страницы расписания для быстрого возврата
+                if user_data.get(CTX_SCHEDULE_PAGES):
+                    user_data["export_back_pages"] = user_data[CTX_SCHEDULE_PAGES]
+                    user_data["export_back_page_index"] = user_data.get(CTX_CURRENT_PAGE_INDEX, 0)
 
-        if file_bytes:
-            entity_label = "преподавателя" if mode == "teacher" else "группы"
-            filename = f"raspisanie_{entity_name.replace(' ', '_')[:30]}.pdf"
-            # Сохраняем состояние для возврата (используем текущую дату из расписания)
-            user_data["export_back_mode"] = mode
-            user_data["export_back_query"] = entity_name
-            # Сохраняем текущую дату из расписания, если она есть
-            export_date = user_data.get(CTX_SELECTED_DATE)
-            if not export_date:
-                export_date = datetime.date.today().strftime("%Y-%m-%d")
-            user_data["export_back_date"] = export_date
-            # Также сохраняем страницы расписания для быстрого возврата
-            if user_data.get(CTX_SCHEDULE_PAGES):
-                user_data["export_back_pages"] = user_data[CTX_SCHEDULE_PAGES]
-                user_data["export_back_page_index"] = user_data.get(CTX_CURRENT_PAGE_INDEX, 0)
-
-            back_kbd = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад к расписанию", callback_data=CallbackData.BACK_TO_SCHEDULE.value)],
-                [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
-            ])
-            await update.callback_query.message.reply_document(
-                document=file_bytes,
-                filename=filename,
-                caption=f"📄 Расписание на неделю для {entity_label}: {escape_html(entity_name)}",
-                reply_markup=back_kbd
-            )
-            await progress.finish()
-        else:
+                back_kbd = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⬅️ Назад к расписанию", callback_data=CallbackData.BACK_TO_SCHEDULE.value)],
+                    [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+                ])
+                await update.callback_query.message.reply_document(
+                    document=file_bytes,
+                    filename=filename,
+                    caption=f"📄 Расписание на неделю для {entity_label}: {escape_html(entity_name)}",
+                    reply_markup=back_kbd
+                )
+                await progress.finish()
+            else:
+                try:
+                    await update.callback_query.message.reply_text("❌ Ошибка при генерации файла. Попробуйте позже.")
+                except Exception:
+                    pass
+                await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
+        except Exception as e:
+            logger.error(f"Ошибка при генерации файла: {e}", exc_info=True)
             try:
-                await update.callback_query.message.reply_text("❌ Ошибка при генерации файла. Попробуйте позже.")
+                await update.callback_query.message.reply_text("❌ Произошла ошибка при генерации файла. Попробуйте позже.")
             except Exception:
                 pass
             await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
-    except Exception as e:
-        logger.error(f"Ошибка при генерации файла: {e}", exc_info=True)
-        try:
-            await update.callback_query.message.reply_text("❌ Произошла ошибка при генерации файла. Попробуйте позже.")
-        except Exception:
-            pass
-        await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
-    finally:
-        # Снимаем блокировку
-        set_user_busy(user_data, False)
+        # Блокировка снимется автоматически через context manager
 
 async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     """Экспорт расписания по дням (отдельные картинки для каждого дня)"""
@@ -1867,7 +1939,7 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
     await progress.start("⏳ Подготавливаю изображения по дням...")
 
     try:
-        entity_type = API_TYPE_TEACHER if mode == "teacher" else API_TYPE_GROUP
+        entity_type = API_TYPE_TEACHER if mode == MODE_TEACHER else API_TYPE_GROUP
         from .export import get_week_schedule_structured, generate_day_schedule_image
         from .schedule import get_schedule_structured
 
@@ -1883,7 +1955,7 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
         logger.info(f"Получено расписание на неделю: {len(week_schedule)} дней (неделя с {monday.strftime('%d.%m.%Y')})")
 
         weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"]
-        entity_label = "преподавателя" if mode == "teacher" else "группы"
+        entity_label = ENTITY_TEACHER_GENITIVE if mode == MODE_TEACHER else ENTITY_GROUP_GENITIVE
 
         # Сначала определяем, сколько дней с парами будет
         days_with_pairs_list = []
@@ -1963,7 +2035,7 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 sent_messages = await update.callback_query.message.reply_media_group(media=media_group)
                 # Добавляем только одно финальное сообщение с информацией
                 if sent_messages:
-                    entity_label_text = "группы" if mode == "student" else "преподавателя"
+                    entity_label_text = ENTITY_GROUP_GENITIVE if mode == MODE_STUDENT else ENTITY_TEACHER_GENITIVE
                     await sent_messages[-1].reply_text(
                         f"📅 Расписание на неделю для {entity_label_text}: {escape_html(entity_name)}",
                         reply_markup=back_kbd
@@ -2002,9 +2074,7 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
         except Exception:
             pass
         await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
-    finally:
-        # Снимаем блокировку
-        set_user_busy(user_data, False)
+    # Блокировка снимется автоматически через context manager
 
 
 async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
@@ -2069,7 +2139,7 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
         workbook.save(main_buffer)
         main_buffer.seek(0)
         filename = f"{sanitize_filename(entity_name)}_{semester_label.replace(' ', '_')}.xlsx"
-        entity_label = "преподавателя" if mode == "teacher" else "группы"
+        entity_label = ENTITY_TEACHER_GENITIVE if mode == MODE_TEACHER else ENTITY_GROUP_GENITIVE
         caption = (
             f"📊 Семестр ({semester_label}) для {entity_label}: <b>{escape_html(entity_name)}</b>\n"
             f"🕒 Всего часов: {total_hours:.1f}"
@@ -2097,7 +2167,7 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=back_kbd
         )
 
-        if mode == "teacher" and per_group_rows:
+        if mode == MODE_TEACHER and per_group_rows:
             zip_bytes, groups_count = build_group_archive_bytes(per_group_rows, per_group_hours, entity_name, semester_label)
             if zip_bytes and groups_count:
                 await progress.update(90, "📦 Упаковываю группы...")
@@ -2121,6 +2191,215 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
             pass
     finally:
         set_user_busy(user_data, False)
+
+# Вспомогательные функции для callback_router
+async def handle_confirm_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Подтверждение режима при умном холодном старте"""
+    user_data = context.user_data
+    parts = data.replace("confirm_mode_", "").split("_", 1)
+    if len(parts) == 2:
+        mode = parts[0]
+        pending_query = user_data.get(f"pending_query_{mode}")
+        if pending_query:
+            user_data[CTX_MODE] = mode
+            user_data.pop(f"pending_query_{mode}", None)
+            # Просто показываем расписание, не устанавливаем default_query
+            await handle_schedule_search(update, context, pending_query)
+        else:
+            await safe_edit_message_text(update.callback_query, "Ошибка: запрос не найден")
+
+async def handle_quick_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Быстрый доступ к расписанию по умолчанию"""
+    user_data = context.user_data
+    mode = data.replace("quick_schedule_", "")
+    default_query = user_data.get(CTX_DEFAULT_QUERY)
+    if default_query:
+        user_data[CTX_MODE] = mode
+        user_data[CTX_SELECTED_DATE] = datetime.date.today().strftime("%Y-%m-%d")
+        await safe_edit_message_text(update.callback_query, "Загружаю ваше расписание...")
+        await fetch_and_display_schedule(update, context, default_query)
+    else:
+        await safe_answer_callback_query(update.callback_query, "Расписание по умолчанию не установлено", show_alert=True)
+
+async def handle_set_default_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Настройка режима по умолчанию"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "без username"
+    user_data = context.user_data
+    mode = MODE_STUDENT if "student" in data else MODE_TEACHER
+    mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
+    logger.info(f"⚙️ [{user_id}] @{username} → Настройка {mode_text} по умолчанию")
+    user_data[CTX_MODE], user_data[CTX_AWAITING_DEFAULT_QUERY] = mode, True
+    prompt = "Теперь отправьте точное название группы:" if mode == MODE_STUDENT else "Теперь отправьте точное ФИО преподавателя:"
+    kbd = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data=CALLBACK_DATA_CANCEL_INPUT)]])
+    await safe_edit_message_text(update.callback_query, prompt, reply_markup=kbd)
+    await settings_menu_callback(update, context)
+
+async def handle_cancel_input(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Обработка отмены ввода"""
+    user_data = context.user_data
+    awaiting_manual = user_data.pop(CTX_AWAITING_MANUAL_DATE, None)
+    awaiting_default = user_data.pop(CTX_AWAITING_DEFAULT_QUERY, None)
+    user_data.pop(CTX_IS_BUSY, None)
+    # Очищаем pending queries
+    for key in list(user_data.keys()):
+        if key.startswith("pending_query_"):
+            user_data.pop(key, None)
+    try:
+        await safe_edit_message_text(update.callback_query, "Действие отменено.")
+    except BadRequest:
+        pass
+    if awaiting_default:
+        await settings_menu_callback(update, context)
+    elif awaiting_manual:
+        await start_command(update, context)
+    else:
+        await start_command(update, context)
+
+async def handle_view_changed_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Обработка просмотра измененного расписания"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "без username"
+    parts = data.replace("view_changed_schedule_", "").split("_", 1)
+    if len(parts) == 2:
+        mode, date_str = parts[0], parts[1]
+        logger.info(f"👁️ [{user_id}] @{username} → Просмотр измененного расписания на {date_str}")
+        user_data = context.user_data
+        schedule_data = context.bot_data.get(f"changed_schedule_{user_id}_{date_str}")
+        if schedule_data:
+            user_data[CTX_MODE] = mode
+            user_data[CTX_SELECTED_DATE] = date_str
+            user_data[CTX_LAST_QUERY] = schedule_data["query"]
+            user_data[CTX_SCHEDULE_PAGES] = schedule_data["pages"]
+            user_data[CTX_CURRENT_PAGE_INDEX] = 0
+            await send_schedule_with_pagination(update, context)
+        else:
+            await safe_answer_callback_query(update.callback_query, "Расписание больше не доступно", show_alert=True)
+
+# --- Standalone Handlers (ВНЕ callback_router) ---
+
+async def handle_mode_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Обработка выбора режима (студент/преподаватель)"""
+    user_data = context.user_data
+    mode = MODE_STUDENT if data == CALLBACK_DATA_MODE_STUDENT else MODE_TEACHER
+    mode_text = ENTITY_STUDENT if mode == MODE_STUDENT else ENTITY_TEACHER
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "без username"
+    logger.info(f"🎯 [{user_id}] @{username} → Выбран режим: {mode_text}")
+    user_data[CTX_MODE] = mode
+
+    # Проверяем, новый ли это пользователь (первый запуск без установленной группы)
+    default_query = user_data.get(CTX_DEFAULT_QUERY)
+    is_new_user = default_query is None
+
+    if is_new_user:
+        # Для новых пользователей запрашиваем ввод группы/преподавателя
+        prompt = "🎓 Введите название вашей группы:" if mode == MODE_STUDENT else "🧑‍🏫 Введите ФИО преподавателя:"
+        user_data[CTX_AWAITING_DEFAULT_QUERY] = True
+        kbd = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data=CALLBACK_DATA_CANCEL_INPUT)]])
+        await safe_edit_message_text(update.callback_query, prompt, reply_markup=kbd)
+    else:
+        # Для существующих пользователей показываем стандартный запрос
+        prompt = "🎓 Введите название группы:" if mode == MODE_STUDENT else "🧑‍🏫 Введите ФИО преподавателя:"
+        kbd = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data=CALLBACK_DATA_CANCEL_INPUT)]])
+        await safe_edit_message_text(update.callback_query, prompt, reply_markup=kbd)
+
+async def handle_reset_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Подтверждение сброса настроек"""
+    prompt = (
+        "Вы уверены, что хотите сбросить настройки?\n\n"
+        "Будут удалены: выбранная группа/преподаватель и отключены уведомления."
+    )
+    kbd = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Да, сбросить", callback_data="do_reset_settings")],
+        [InlineKeyboardButton("⬅️ Отмена", callback_data=CALLBACK_DATA_SETTINGS_MENU)]
+    ])
+    await safe_edit_message_text(update.callback_query, prompt, reply_markup=kbd)
+
+async def handle_reset_execute(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Выполнение сброса настроек"""
+    user_data = context.user_data
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "без username"
+    # Останавливаем джоб, если активна
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    if context.job_queue and chat_id:
+        job_name = f"{JOB_PREFIX_DAILY_SCHEDULE}{chat_id}"
+        job = context.job_queue.get_jobs_by_name(job_name)
+        if job:
+            for j in job:
+                try:
+                    j.schedule_removal()
+                except Exception:
+                    pass
+    # Чистим user_data
+    for key in [
+        CTX_DEFAULT_QUERY,
+        CTX_DEFAULT_MODE,
+        CTX_LAST_QUERY,
+        CTX_SCHEDULE_PAGES,
+        CTX_CURRENT_PAGE_INDEX,
+    ]:
+        user_data.pop(key, None)
+    user_data[CTX_DAILY_NOTIFICATIONS] = False
+    user_data[CTX_NOTIFICATION_TIME] = DEFAULT_NOTIFICATION_TIME
+    user_data.pop(CTX_SELECTED_DATE, None)
+    # Сохраняем в БД: гарантированно очищаем значения в таблице
+    first_name = update.effective_user.first_name if update.effective_user else None
+    last_name = update.effective_user.last_name if update.effective_user else None
+    try:
+        # Полное удаление записи и создание чистой с дефолтами
+        db.delete_user(user_id)
+    except Exception:
+        pass
+    # Создаем запись со сброшенными настройками
+    db.save_user(
+        user_id=user_id,
+        username=username,
+        first_name=first_name,
+        last_name=last_name,
+        default_query=None,
+        default_mode=None,
+        daily_notifications=False,
+        notification_time=DEFAULT_NOTIFICATION_TIME
+    )
+    db.log_activity(user_id, "reset_settings", "defaults_cleared")
+    # Возвращаемся в настройки
+    await safe_answer_callback_query(update.callback_query, "Настройки сброшены.")
+    await settings_menu_callback(update, context)
+
+async def handle_back_to_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Возврат к расписанию из экспорта"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "без username"
+    user_data = context.user_data
+    mode = user_data.get("export_back_mode")
+    query = user_data.get("export_back_query")
+    date_str = user_data.get("export_back_date", datetime.date.today().strftime("%Y-%m-%d"))
+    saved_pages = user_data.get("export_back_pages")
+    saved_page_index = user_data.get("export_back_page_index", 0)
+
+    logger.info(f"⬅️ [{user_id}] @{username} → Возврат к расписанию из экспорта: {query} ({date_str})")
+
+    if mode and query:
+        user_data[CTX_MODE] = mode
+        user_data[CTX_SELECTED_DATE] = date_str
+        user_data[CTX_LAST_QUERY] = query
+
+        # Если есть сохраненные страницы, используем их для быстрого возврата
+        if saved_pages:
+            user_data[CTX_SCHEDULE_PAGES] = saved_pages
+            user_data[CTX_CURRENT_PAGE_INDEX] = saved_page_index
+            # Пытаемся показать сообщение о загрузке, но не критично если не получится
+            await safe_edit_message_text(update.callback_query, "Возвращаюсь к расписанию...")
+            await send_schedule_with_pagination(update, context)
+        else:
+            # Загружаем расписание заново, если страницы не сохранены
+            await safe_edit_message_text(update.callback_query, "Загружаю расписание...")
+            await fetch_and_display_schedule(update, context, query)
+    else:
+        logger.warning(f"⚠️ [{user_id}] Не удалось восстановить состояние расписания из экспорта")
+        await safe_answer_callback_query(update.callback_query, "Не удалось восстановить расписание", show_alert=True)
 
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.callback_query:
@@ -2178,220 +2457,63 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Отвечаем на callback сразу
     await safe_answer_callback_query(update.callback_query)
 
-    try:
-        if data == CALLBACK_DATA_MODE_STUDENT or data == CALLBACK_DATA_MODE_TEACHER:
-            mode = "student" if data == CALLBACK_DATA_MODE_STUDENT else "teacher"
-            mode_text = "студента" if mode == "student" else "преподавателя"
-            logger.info(f"🎯 [{user_id}] @{username} → Выбран режим: {mode_text}")
-            user_data[CTX_MODE] = mode
+    # Словарь для точных совпадений (Direct Match)
+    # Прямая ссылка на функцию, без lambda, так как сигнатуры совпадают
+    HANDLERS = {
+        CALLBACK_DATA_MODE_STUDENT: handle_mode_selection,
+        CALLBACK_DATA_MODE_TEACHER: handle_mode_selection,
+        CALLBACK_DATA_BACK_TO_START: lambda u, c, d: start_command(u, c),  # start_command принимает 2 аргумента
+        CallbackData.HELP_COMMAND_INLINE.value: lambda u, c, d: help_command_handler(u, c),  # принимает 2
+        "help_command_inline": lambda u, c, d: help_command_handler(u, c),
+        CALLBACK_DATA_SETTINGS_MENU: lambda u, c, d: settings_menu_callback(u, c),  # принимает 2
+        "reset_settings": handle_reset_confirm,
+        "do_reset_settings": handle_reset_execute,
+        CALLBACK_DATA_TOGGLE_DAILY: lambda u, c, d: toggle_daily_notifications_callback(u, c),  # принимает 2
+        "set_notification_time": lambda u, c, d: show_notification_time_menu(u, c),  # принимает 2
+        CALLBACK_DATA_CANCEL_INPUT: handle_cancel_input,
+        CallbackData.BACK_TO_SCHEDULE.value: handle_back_to_schedule,
+        "back_to_schedule_from_export": handle_back_to_schedule,
+    }
 
-            # Проверяем, новый ли это пользователь (первый запуск без установленной группы)
-            default_query = user_data.get(CTX_DEFAULT_QUERY)
-            is_new_user = default_query is None
-
-            if is_new_user:
-                # Для новых пользователей запрашиваем ввод группы/преподавателя
-                prompt = "🎓 Введите название вашей группы:" if mode == "student" else "🧑‍🏫 Введите ФИО преподавателя:"
-                user_data[CTX_AWAITING_DEFAULT_QUERY] = True
-                kbd = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data=CALLBACK_DATA_CANCEL_INPUT)]])
-                await safe_edit_message_text(update.callback_query, prompt, reply_markup=kbd)
-            else:
-                # Для существующих пользователей показываем стандартный запрос
-                prompt = "🎓 Введите название группы:" if mode == "student" else "🧑‍🏫 Введите ФИО преподавателя:"
-                kbd = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data=CALLBACK_DATA_CANCEL_INPUT)]])
-                await safe_edit_message_text(update.callback_query, prompt, reply_markup=kbd)
-        elif data.startswith("confirm_mode_"):
-            # Подтверждение режима при умном холодном старте
-            parts = data.replace("confirm_mode_", "").split("_", 1)
-            if len(parts) == 2:
-                mode = parts[0]
-                pending_query = user_data.get(f"pending_query_{mode}")
-                if pending_query:
-                    user_data[CTX_MODE] = mode
-                    user_data.pop(f"pending_query_{mode}", None)
-                    await handle_schedule_search(update, context, pending_query)
-                else:
-                    await safe_edit_message_text(update.callback_query, "Ошибка: запрос не найден")
-        elif data.startswith("quick_schedule_"):
-            # Быстрый доступ к расписанию по умолчанию
-            mode = data.replace("quick_schedule_", "")
-            default_query = user_data.get(CTX_DEFAULT_QUERY)
-            if default_query:
-                user_data[CTX_MODE] = mode
-                user_data[CTX_SELECTED_DATE] = datetime.date.today().strftime("%Y-%m-%d")
-                await safe_edit_message_text(update.callback_query, "Загружаю ваше расписание...")
-                await fetch_and_display_schedule(update, context, default_query)
-            else:
-                await safe_answer_callback_query(update.callback_query, "Расписание по умолчанию не установлено", show_alert=True)
-        elif data == CALLBACK_DATA_BACK_TO_START:
-            await start_command(update, context)
-        elif data == CallbackData.HELP_COMMAND_INLINE.value or data == "help_command_inline":
-            await help_command_handler(update, context)
-        elif data == CALLBACK_DATA_SETTINGS_MENU:
-            await settings_menu_callback(update, context)
-        elif data.startswith("set_default_mode_"):
-            mode = "student" if "student" in data else "teacher"
-            mode_text = "группу" if mode == "student" else "преподавателя"
-            logger.info(f"⚙️ [{user_id}] @{username} → Настройка {mode_text} по умолчанию")
-            user_data[CTX_MODE], user_data[CTX_AWAITING_DEFAULT_QUERY] = mode, True
-            prompt = "Теперь отправьте точное название группы:" if mode == "student" else "Теперь отправьте точное ФИО преподавателя:"
-            kbd = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data=CALLBACK_DATA_CANCEL_INPUT)]])
-            await safe_edit_message_text(update.callback_query, prompt, reply_markup=kbd)
-            await settings_menu_callback(update, context)
-        elif data == "reset_settings":
-            # Подтверждение сброса
-            prompt = (
-                "Вы уверены, что хотите сбросить настройки?\n\n"
-                "Будут удалены: выбранная группа/преподаватель и отключены уведомления."
-            )
-            kbd = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Да, сбросить", callback_data="do_reset_settings")],
-                [InlineKeyboardButton("⬅️ Отмена", callback_data=CALLBACK_DATA_SETTINGS_MENU)]
-            ])
-            await safe_edit_message_text(update.callback_query, prompt, reply_markup=kbd)
-        elif data == "do_reset_settings":
-            # Выполняем сброс
-            # Останавливаем джоб, если активна
-            chat_id = update.effective_chat.id if update.effective_chat else None
-            if context.job_queue and chat_id:
-                job_name = f"daily_schedule_{chat_id}"
-                job = context.job_queue.get_jobs_by_name(job_name)
-                if job:
-                    for j in job:
-                        try:
-                            j.schedule_removal()
-                        except Exception:
-                            pass
-            # Чистим user_data
-            for key in [
-                CTX_DEFAULT_QUERY,
-                CTX_DEFAULT_MODE,
-                CTX_LAST_QUERY,
-                CTX_SCHEDULE_PAGES,
-                CTX_CURRENT_PAGE_INDEX,
-            ]:
-                user_data.pop(key, None)
-            user_data[CTX_DAILY_NOTIFICATIONS] = False
-            user_data[CTX_NOTIFICATION_TIME] = "21:00"
-            user_data.pop(CTX_SELECTED_DATE, None)
-            # Сохраняем в БД: гарантированно очищаем значения в таблице
-            first_name = update.effective_user.first_name if update.effective_user else None
-            last_name = update.effective_user.last_name if update.effective_user else None
-            try:
-                # Полное удаление записи и создание чистой с дефолтами
-                db.delete_user(user_id)
-            except Exception:
-                pass
-            # Создаем запись со сброшенными настройками
-            db.save_user(
-                user_id=user_id,
-                username=username,
-                first_name=first_name,
-                last_name=last_name,
-                default_query=None,
-                default_mode=None,
-                daily_notifications=False,
-                notification_time="21:00"
-            )
-            db.log_activity(user_id, "reset_settings", "defaults_cleared")
-            # Возвращаемся в настройки
-            await safe_answer_callback_query(update.callback_query, "Настройки сброшены.")
-            await settings_menu_callback(update, context)
-        elif data == CALLBACK_DATA_TOGGLE_DAILY:
-            await toggle_daily_notifications_callback(update, context)
-        elif data == "set_notification_time":
-            await show_notification_time_menu(update, context)
-        elif data.startswith("set_time_"):
-            await set_notification_time(update, context, data)
-        elif data.startswith(CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX):
-            await handle_notification_open_callback(update, context, data)
-        elif data.startswith(f"{CALLBACK_DATA_DATE_TODAY}_quick_") or data.startswith(f"{CALLBACK_DATA_DATE_TOMORROW}_quick_"):
-            # Быстрый доступ из главного меню
-            await handle_quick_date_callback(update, context, data)
-        elif data.startswith(f"{CALLBACK_DATA_DATE_TODAY}_") or data.startswith(f"{CALLBACK_DATA_DATE_TOMORROW}_"):
-            # Быстрый доступ из расписания
-            await handle_quick_date_callback(update, context, data)
-        elif data.startswith((CALLBACK_DATA_PREV_SCHEDULE_PREFIX, CALLBACK_DATA_NEXT_SCHEDULE_PREFIX, CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX)):
-            await schedule_navigation_callback(update, context)
-        elif data == CALLBACK_DATA_CANCEL_INPUT:
-            awaiting_manual = user_data.pop(CTX_AWAITING_MANUAL_DATE, None)
-            awaiting_default = user_data.pop(CTX_AWAITING_DEFAULT_QUERY, None)
-            user_data.pop(CTX_IS_BUSY, None)
-            # Очищаем pending queries
-            for key in list(user_data.keys()):
-                if key.startswith("pending_query_"):
-                    user_data.pop(key, None)
-            try:
-                await safe_edit_message_text(update.callback_query, "Действие отменено.")
-            except BadRequest:
-                pass
-            if awaiting_default:
-                await settings_menu_callback(update, context)
-            elif awaiting_manual:
-                await start_command(update, context)
-            else:
-                await start_command(update, context)
-        elif data.startswith(CALLBACK_DATA_EXPORT_MENU):
-            await show_export_menu(update, context, data)
-        elif data.startswith(CALLBACK_DATA_EXPORT_WEEK_IMAGE):
-            await export_week_schedule_image(update, context, data)
-        elif data.startswith(CALLBACK_DATA_EXPORT_WEEK_FILE):
-            await export_week_schedule_file(update, context, data)
-        elif data.startswith(CALLBACK_DATA_EXPORT_DAYS_IMAGES):
-            await export_days_images(update, context, data)
-        elif data.startswith(CALLBACK_DATA_EXPORT_SEMESTER):
-            await export_semester_excel(update, context, data)
-        elif data.startswith("view_changed_schedule_"):
-            # Обработка просмотра измененного расписания
-            parts = data.replace("view_changed_schedule_", "").split("_", 1)
-            if len(parts) == 2:
-                mode, date_str = parts[0], parts[1]
-                logger.info(f"👁️ [{user_id}] @{username} → Просмотр измененного расписания на {date_str}")
-                schedule_data = context.bot_data.get(f"changed_schedule_{user_id}_{date_str}")
-                if schedule_data:
-                    user_data[CTX_MODE] = mode
-                    user_data[CTX_SELECTED_DATE] = date_str
-                    user_data[CTX_LAST_QUERY] = schedule_data["query"]
-                    user_data[CTX_SCHEDULE_PAGES] = schedule_data["pages"]
-                    user_data[CTX_CURRENT_PAGE_INDEX] = 0
-                    await send_schedule_with_pagination(update, context)
-                else:
-                    await safe_answer_callback_query(update.callback_query, "Расписание больше не доступно", show_alert=True)
-        elif data == CallbackData.BACK_TO_SCHEDULE.value or data == "back_to_schedule_from_export":
-            # Возврат к расписанию из экспорта или меню экспорта
-            mode = user_data.get("export_back_mode")
-            query = user_data.get("export_back_query")
-            date_str = user_data.get("export_back_date", datetime.date.today().strftime("%Y-%m-%d"))
-            saved_pages = user_data.get("export_back_pages")
-            saved_page_index = user_data.get("export_back_page_index", 0)
-
-            logger.info(f"⬅️ [{user_id}] @{username} → Возврат к расписанию из экспорта: {query} ({date_str})")
-
-            if mode and query:
-                user_data[CTX_MODE] = mode
-                user_data[CTX_SELECTED_DATE] = date_str
-                user_data[CTX_LAST_QUERY] = query
-
-                # Если есть сохраненные страницы, используем их для быстрого возврата
-                if saved_pages:
-                    user_data[CTX_SCHEDULE_PAGES] = saved_pages
-                    user_data[CTX_CURRENT_PAGE_INDEX] = saved_page_index
-                    # Пытаемся показать сообщение о загрузке, но не критично если не получится
-                    await safe_edit_message_text(update.callback_query, "Возвращаюсь к расписанию...")
-                    await send_schedule_with_pagination(update, context)
-                else:
-                    # Загружаем расписание заново, если страницы не сохранены
-                    await safe_edit_message_text(update.callback_query, "Загружаю расписание...")
-                    await fetch_and_display_schedule(update, context, query)
-            else:
-                logger.warning(f"⚠️ [{user_id}] Не удалось восстановить состояние расписания из экспорта")
-                await safe_answer_callback_query(update.callback_query, "Не удалось восстановить расписание", show_alert=True)
-        else:
-            logger.warning(f"⚠️ [{user_id}] Неизвестный callback: {data}")
-            await safe_answer_callback_query(update.callback_query, "Неизвестная команда", show_alert=True)
-    except Exception as e:
-        logger.error(f"Ошибка в callback_router: {e}", exc_info=True)
+    if data in HANDLERS:
+        handler = HANDLERS[data]
         try:
-            await safe_answer_callback_query(update.callback_query, "Произошла ошибка", show_alert=True)
-        except Exception:
-            pass
+            await handler(update, context, data)
+        except TypeError:
+            # Если функция принимает только 2 аргумента
+            await handler(update, context)
+        return
+
+    # Список префиксов для динамических данных (порядок важен, если префиксы пересекаются)
+    PREFIXES = [
+        (CALLBACK_DATA_EXPORT_MENU, show_export_menu),
+        (CALLBACK_DATA_EXPORT_WEEK_IMAGE, export_week_schedule_image),
+        (CALLBACK_DATA_EXPORT_WEEK_FILE, export_week_schedule_file),
+        (CALLBACK_DATA_EXPORT_DAYS_IMAGES, export_days_images),
+        (CALLBACK_DATA_EXPORT_SEMESTER, export_semester_excel),
+        ("set_default_mode_", handle_set_default_mode),
+        ("quick_schedule_", handle_quick_schedule),
+        ("confirm_mode_", handle_confirm_mode),
+        (CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX, handle_notification_open_callback),
+        (f"{CALLBACK_DATA_DATE_TODAY}_quick_", handle_quick_date_callback),
+        (f"{CALLBACK_DATA_DATE_TOMORROW}_quick_", handle_quick_date_callback),
+        (f"{CALLBACK_DATA_DATE_TODAY}_", handle_quick_date_callback),
+        (f"{CALLBACK_DATA_DATE_TOMORROW}_", handle_quick_date_callback),
+        ("set_time_", set_notification_time),
+        ("view_changed_schedule_", handle_view_changed_schedule),
+        (CALLBACK_DATA_PREV_SCHEDULE_PREFIX, lambda u, c, d: schedule_navigation_callback(u, c)),
+        (CALLBACK_DATA_NEXT_SCHEDULE_PREFIX, lambda u, c, d: schedule_navigation_callback(u, c)),
+        (CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX, lambda u, c, d: schedule_navigation_callback(u, c)),
+    ]
+
+    for prefix, handler in PREFIXES:
+        if data.startswith(prefix):
+            try:
+                await handler(update, context, data)
+            except TypeError:
+                # Если функция принимает только 2 аргумента
+                await handler(update, context)
+            return
+
+    logger.warning(f"⚠️ [{user_id}] Неизвестный callback: {data}")
+    await safe_answer_callback_query(update.callback_query, "Неизвестная команда", show_alert=True)

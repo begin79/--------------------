@@ -4,6 +4,6 @@
 Переименуйте файл в config.py и заполните токен/чат при необходимости.
 """
 
-TELEGRAM_BOT_TOKEN = "8379788668:AAFIisg9BX3hdCONTQGenezZ9io3OPixb8A"
+TELEGRAM_BOT_TOKEN = "123456:replace_me"
 TELEGRAM_CHAT_ID = 123456789
 
