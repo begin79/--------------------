@@ -2233,7 +2233,6 @@ async def handle_set_default_mode(update: Update, context: ContextTypes.DEFAULT_
     prompt = "Теперь отправьте точное название группы:" if mode == MODE_STUDENT else "Теперь отправьте точное ФИО преподавателя:"
     kbd = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data=CALLBACK_DATA_CANCEL_INPUT)]])
     await safe_edit_message_text(update.callback_query, prompt, reply_markup=kbd)
-    await settings_menu_callback(update, context)
 
 async def handle_cancel_input(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     """Обработка отмены ввода"""
@@ -2290,7 +2289,7 @@ async def handle_mode_selection(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Проверяем, есть ли у пользователя установленная группа/преподаватель
     default_query = user_data.get(CTX_DEFAULT_QUERY)
-    
+
     if default_query is None:
         # Для пользователей без установленной группы просто устанавливаем режим
         # и позволяем им искать расписание без привязки
