@@ -214,6 +214,7 @@ class UserDatabase:
         """Получить список всех пользователей"""
         try:
             with self._get_connection() as conn:
+                conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute('SELECT * FROM users ORDER BY last_active DESC')
                 rows = cursor.fetchall()
@@ -267,6 +268,7 @@ class UserDatabase:
         """Получить список пользователей с установленными группами/преподавателями"""
         try:
             with self._get_connection() as conn:
+                conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cursor.execute('''
                     SELECT user_id, default_query, default_mode, daily_notifications, notification_time
@@ -275,7 +277,9 @@ class UserDatabase:
                       AND default_mode IS NOT NULL AND default_mode != ''
                 ''')
                 rows = cursor.fetchall()
-                return [dict(row) for row in rows]
+                result = [dict(row) for row in rows]
+                logger.debug(f"Найдено {len(result)} пользователей с установленной группой/преподавателем")
+                return result
         except Exception as e:
             logger.error(f"Ошибка получения пользователей с установленными группами: {e}", exc_info=True)
             return []

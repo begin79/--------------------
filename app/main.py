@@ -139,30 +139,30 @@ async def restore_users_from_activity_log(context: ContextTypes.DEFAULT_TYPE):
     """Автоматическое восстановление пользователей из логов активности при старте бота"""
     from .database import db
     import sqlite3
-    
+
     try:
         # Проверяем количество пользователей в базе
         existing_users = db.get_all_users()
         existing_count = len(existing_users)
-        
+
         # Если пользователей меньше 5, пытаемся восстановить из логов
         if existing_count < 5:
             logger.info(f"🔍 Обнаружено мало пользователей в базе ({existing_count}), запускаю восстановление из логов активности...")
-            
+
             # Получаем все user_id из activity_log
             all_user_ids = db.get_all_known_user_ids(include_activity_log=True)
             existing_user_ids = {u['user_id'] for u in existing_users}
             users_to_add = [uid for uid in all_user_ids if uid not in existing_user_ids]
-            
+
             if users_to_add:
                 logger.info(f"📋 Найдено {len(users_to_add)} пользователей в логах для восстановления")
-                
+
                 # Получаем информацию из activity_log
                 db_path = db.db_path
                 conn = sqlite3.connect(db_path)
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                
+
                 added_count = 0
                 for user_id in users_to_add:
                     try:
@@ -175,7 +175,7 @@ async def restore_users_from_activity_log(context: ContextTypes.DEFAULT_TYPE):
                             LIMIT 1
                         ''', (user_id,))
                         row = cursor.fetchone()
-                        
+
                         username = None
                         if row and row['details']:
                             details = row['details']
@@ -184,7 +184,7 @@ async def restore_users_from_activity_log(context: ContextTypes.DEFAULT_TYPE):
                                     username = details.split('username=')[1].split(',')[0].strip()
                                 except:
                                     pass
-                        
+
                         # Добавляем пользователя
                         db.save_user(
                             user_id=user_id,
@@ -199,9 +199,9 @@ async def restore_users_from_activity_log(context: ContextTypes.DEFAULT_TYPE):
                         added_count += 1
                     except Exception as e:
                         logger.debug(f"Ошибка при восстановлении пользователя {user_id}: {e}")
-                
+
                 conn.close()
-                
+
                 if added_count > 0:
                     logger.info(f"✅ Восстановлено {added_count} пользователей из логов активности")
                 else:
@@ -215,15 +215,44 @@ async def restore_users_from_activity_log(context: ContextTypes.DEFAULT_TYPE):
 
 async def initialize_active_users(context: ContextTypes.DEFAULT_TYPE):
     """Инициализирует список активных пользователей из БД при старте бота и восстанавливает задачи уведомлений"""
-    from .database import db
+    from .database import db, DB_PATH
     from .constants import CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE, CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME
     from .jobs import daily_schedule_job
+    from pathlib import Path
+
+    # Проверяем базу данных при старте
+    db_path = Path(DB_PATH)
+    logger.info(f"📊 Проверка базы данных: {db_path}")
+    logger.info(f"   Файл существует: {db_path.exists()}")
+    if db_path.exists():
+        size = db_path.stat().st_size
+        logger.info(f"   Размер файла: {size / 1024:.2f} KB")
+    
+    # Получаем статистику по пользователям
+    try:
+        all_users = db.get_all_users()
+        users_with_query = db.get_users_with_default_query()
+        logger.info(f"📊 Статистика базы данных:")
+        logger.info(f"   Всего пользователей в базе: {len(all_users)}")
+        logger.info(f"   Пользователей с установленной группой/преподавателем: {len(users_with_query)}")
+        
+        if users_with_query:
+            logger.info(f"   Список активных пользователей:")
+            for user in users_with_query[:10]:  # Показываем первые 10
+                logger.info(f"     - user_id={user['user_id']}, query={user.get('default_query')}, mode={user.get('default_mode')}")
+            if len(users_with_query) > 10:
+                logger.info(f"     ... и еще {len(users_with_query) - 10} пользователей")
+    except Exception as e:
+        logger.error(f"Ошибка при получении статистики: {e}", exc_info=True)
 
     # Сначала пытаемся восстановить пользователей из логов, если их мало
     await restore_users_from_activity_log(context)
 
     try:
+        # Получаем пользователей с установленными группами/преподавателями
         users_with_query = db.get_users_with_default_query()
+        logger.info(f"🔄 Инициализация активных пользователей: найдено {len(users_with_query)} пользователей с установленной группой/преподавателем")
+        
         if 'active_users' not in context.bot_data:
             context.bot_data['active_users'] = set()
         if 'users_data_cache' not in context.bot_data:
