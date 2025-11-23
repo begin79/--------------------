@@ -135,11 +135,92 @@ async def text_message_with_admin_check(update: Update, context: ContextTypes.DE
     # Обычная обработка сообщений
     await handle_text_message(update, context)
 
+async def restore_users_from_activity_log(context: ContextTypes.DEFAULT_TYPE):
+    """Автоматическое восстановление пользователей из логов активности при старте бота"""
+    from .database import db
+    import sqlite3
+    
+    try:
+        # Проверяем количество пользователей в базе
+        existing_users = db.get_all_users()
+        existing_count = len(existing_users)
+        
+        # Если пользователей меньше 5, пытаемся восстановить из логов
+        if existing_count < 5:
+            logger.info(f"🔍 Обнаружено мало пользователей в базе ({existing_count}), запускаю восстановление из логов активности...")
+            
+            # Получаем все user_id из activity_log
+            all_user_ids = db.get_all_known_user_ids(include_activity_log=True)
+            existing_user_ids = {u['user_id'] for u in existing_users}
+            users_to_add = [uid for uid in all_user_ids if uid not in existing_user_ids]
+            
+            if users_to_add:
+                logger.info(f"📋 Найдено {len(users_to_add)} пользователей в логах для восстановления")
+                
+                # Получаем информацию из activity_log
+                db_path = db.db_path
+                conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                added_count = 0
+                for user_id in users_to_add:
+                    try:
+                        # Пытаемся получить username из последней активности
+                        cursor.execute('''
+                            SELECT details
+                            FROM activity_log
+                            WHERE user_id = ?
+                            ORDER BY timestamp DESC
+                            LIMIT 1
+                        ''', (user_id,))
+                        row = cursor.fetchone()
+                        
+                        username = None
+                        if row and row['details']:
+                            details = row['details']
+                            if 'username=' in details:
+                                try:
+                                    username = details.split('username=')[1].split(',')[0].strip()
+                                except:
+                                    pass
+                        
+                        # Добавляем пользователя
+                        db.save_user(
+                            user_id=user_id,
+                            username=username,
+                            first_name=None,
+                            last_name=None,
+                            default_query=None,
+                            default_mode=None,
+                            daily_notifications=False,
+                            notification_time='21:00'
+                        )
+                        added_count += 1
+                    except Exception as e:
+                        logger.debug(f"Ошибка при восстановлении пользователя {user_id}: {e}")
+                
+                conn.close()
+                
+                if added_count > 0:
+                    logger.info(f"✅ Восстановлено {added_count} пользователей из логов активности")
+                else:
+                    logger.info("ℹ️ Пользователи для восстановления не найдены")
+            else:
+                logger.info("ℹ️ Все пользователи из логов уже есть в базе данных")
+        else:
+            logger.debug(f"Пользователей в базе достаточно ({existing_count}), восстановление не требуется")
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка при восстановлении пользователей из логов: {e}")
+
 async def initialize_active_users(context: ContextTypes.DEFAULT_TYPE):
     """Инициализирует список активных пользователей из БД при старте бота и восстанавливает задачи уведомлений"""
     from .database import db
     from .constants import CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE, CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME
     from .jobs import daily_schedule_job
+
+    # Сначала пытаемся восстановить пользователей из логов, если их мало
+    await restore_users_from_activity_log(context)
 
     try:
         users_with_query = db.get_users_with_default_query()
