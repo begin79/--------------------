@@ -2286,10 +2286,11 @@ async def handle_mode_selection(update: Update, context: ContextTypes.DEFAULT_TY
     username = update.effective_user.username or "без username"
     logger.info(f"🎯 [{user_id}] @{username} → Выбран режим: {mode_text}")
     user_data[CTX_MODE] = mode
-
-    # ВАЖНО: НЕ устанавливаем CTX_AWAITING_DEFAULT_QUERY здесь!
+    
+    # ВАЖНО: Явно сбрасываем CTX_AWAITING_DEFAULT_QUERY, если он был установлен ранее
     # Это делается только в handle_set_default_mode (когда пользователь нажимает "Установить/изменить" в настройках)
     # Здесь пользователь просто хочет посмотреть расписание, а не устанавливать группу по умолчанию
+    user_data.pop(CTX_AWAITING_DEFAULT_QUERY, None)
 
     entity_text = "группу" if mode == MODE_STUDENT else "преподавателя"
     prompt = (
