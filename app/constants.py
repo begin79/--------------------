@@ -101,6 +101,7 @@ class UserContextKey(str, Enum):
     NOTIFICATION_TIME = "ctx_notification_time"
     IS_BUSY = "ctx_is_busy"  # Для блокировки одновременных запросов
     REPLY_KEYBOARD_PINNED = "ctx_reply_keyboard_pinned"
+    FOUND_ENTITIES = "ctx_found_entities"  # Список найденных вариантов для выбора
 
 # Для обратной совместимости
 CTX_MODE = UserContextKey.MODE.value
@@ -116,6 +117,7 @@ CTX_DAILY_NOTIFICATIONS = UserContextKey.DAILY_NOTIFICATIONS.value
 CTX_NOTIFICATION_TIME = UserContextKey.NOTIFICATION_TIME.value
 CTX_IS_BUSY = UserContextKey.IS_BUSY.value
 CTX_REPLY_KEYBOARD_PINNED = UserContextKey.REPLY_KEYBOARD_PINNED.value
+CTX_FOUND_ENTITIES = UserContextKey.FOUND_ENTITIES.value
 
 # Магические строки - режимы работы
 MODE_STUDENT = BotMode.STUDENT.value  # "student"

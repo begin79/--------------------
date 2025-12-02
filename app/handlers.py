@@ -16,7 +16,7 @@ from telegram.ext import ContextTypes
 from .constants import (
     CTX_MODE, CTX_SELECTED_DATE, CTX_AWAITING_MANUAL_DATE, CTX_LAST_QUERY, CTX_SCHEDULE_PAGES,
     CTX_CURRENT_PAGE_INDEX, CTX_AWAITING_DEFAULT_QUERY, CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE,
-    CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME, CTX_IS_BUSY, CTX_REPLY_KEYBOARD_PINNED,
+    CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME, CTX_IS_BUSY, CTX_REPLY_KEYBOARD_PINNED, CTX_FOUND_ENTITIES,
     CALLBACK_DATA_MODE_STUDENT, CALLBACK_DATA_MODE_TEACHER, CALLBACK_DATA_SETTINGS_MENU,
     CALLBACK_DATA_BACK_TO_START, CALLBACK_DATA_TOGGLE_DAILY,
     CALLBACK_DATA_CANCEL_INPUT, CALLBACK_DATA_DATE_TODAY, CALLBACK_DATA_DATE_TOMORROW,
@@ -571,7 +571,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Очищаем временные ключи
     temp_keys = [CTX_MODE, CTX_SELECTED_DATE, CTX_AWAITING_MANUAL_DATE, CTX_LAST_QUERY,
-                 CTX_SCHEDULE_PAGES, CTX_CURRENT_PAGE_INDEX, CTX_AWAITING_DEFAULT_QUERY, CTX_IS_BUSY]
+                 CTX_SCHEDULE_PAGES, CTX_CURRENT_PAGE_INDEX, CTX_AWAITING_DEFAULT_QUERY, CTX_IS_BUSY, CTX_FOUND_ENTITIES]
     for key in temp_keys:
         context.user_data.pop(key, None)
     for dynamic_key in list(context.user_data.keys()):
@@ -710,18 +710,24 @@ async def help_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     logger.info(f"👤 [{user_id}] @{username} → Команда /help")
 
     text = (
-        "<b>ℹ️ Справка по боту:</b>\n\n"
-        "🔹 <b>/start</b> - Главное меню.\n"
-        "🔹 <b>/settings</b> - Настройки уведомлений и группы по умолчанию.\n"
-        "🔹 <b>/help</b> - Эта справка.\n\n"
+        "<b>ℹ️ Справка по боту ВГЛТУ Расписание</b>\n\n"
+        "<b>📋 Основные команды:</b>\n"
+        "🔹 <b>/start</b> - Главное меню\n"
+        "🔹 <b>/settings</b> - Настройки и уведомления\n"
+        "🔹 <b>/help</b> - Эта справка\n\n"
+        "<b>🎓 Как пользоваться:</b>\n"
+        "1️⃣ Выберите режим (студент/преподаватель)\n"
+        "2️⃣ Введите группу или ФИО преподавателя\n"
+        "3️⃣ Установите расписание по умолчанию\n"
+        "4️⃣ Включите уведомления (опционально)\n\n"
         "<b>📱 Inline режим:</b>\n"
-        "Используйте бота в любом чате! Просто начните вводить:\n"
-        "<code>@Vgltu25_bot группа</code> или <code>@Vgltu25_bot препод</code>\n\n"
-        "Примеры:\n"
-        "• <code>@Vgltu25_bot ИС1-227</code> - поиск группы\n"
-        "• <code>@Vgltu25_bot п Иванов</code> - поиск преподавателя\n"
-        "• <code>@Vgltu25_bot г ИС1</code> - поиск группы (с префиксом)\n\n"
-        "Выберите нужный вариант из списка, и расписание отправится в чат!"
+        "Используйте бота в любом чате! Начните вводить:\n"
+        "<code>@Vgltu25_bot ИС1-231</code> - поиск группы\n"
+        "<code>@Vgltu25_bot п Иванов</code> - поиск преподавателя\n\n"
+        "<b>📤 Экспорт:</b>\n"
+        "📄 PDF - для печати\n"
+        "🖼 Изображение - для быстрого просмотра\n\n"
+        "💡 <i>Совет: Установите группу по умолчанию для быстрого доступа!</i>"
     )
     reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]])
     if update.callback_query:
@@ -1016,6 +1022,27 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
 
         mode = user_data[CTX_MODE]
         mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
+        
+        # Проверяем, есть ли сохраненные варианты из предыдущего поиска
+        saved_found = user_data.get(CTX_FOUND_ENTITIES, [])
+        if saved_found:
+            # Проверяем точное совпадение (без учета регистра)
+            exact_match = next((entity for entity in saved_found if entity.lower() == text.lower()), None)
+            if exact_match:
+                logger.info(f"✅ [{user_id}] @{username} → Точное совпадение с сохраненным вариантом: '{exact_match}'")
+                # Очищаем сохраненные варианты
+                user_data.pop(CTX_FOUND_ENTITIES, None)
+                # Устанавливаем стандартную клавиатуру
+                reply_keyboard = get_default_reply_keyboard()
+                s_name = "группа" if mode == MODE_STUDENT else "преподаватель"
+                verb = "Найдена" if mode == MODE_STUDENT else "Найден"
+                await update.message.reply_text(
+                    f"{verb} {s_name}: {exact_match}.\nЗагружаю...",
+                    reply_markup=reply_keyboard
+                )
+                await fetch_and_display_schedule(update, context, exact_match)
+                return
+        
         logger.info(f"🔍 [{user_id}] @{username} → Ищет {mode_text}: '{text}'")
 
         await update.message.reply_chat_action(ChatAction.TYPING)
@@ -1032,6 +1059,8 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
             logger.warning(f"❌ [{user_id}] {not_found} для запроса '{text}': {err}")
 
         if err or not found:
+            # Очищаем сохраненные варианты при ошибке
+            user_data.pop(CTX_FOUND_ENTITIES, None)
             suggestion = "Попробуйте ввести более точное название или хотя бы первые 3-4 буквы."
             # Устанавливаем стандартную клавиатуру
             reply_keyboard = get_default_reply_keyboard()
@@ -1042,12 +1071,16 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
         reply_keyboard = get_default_reply_keyboard()
 
         if len(found) == 1:
+            # Очищаем сохраненные варианты при успешном поиске одной группы
+            user_data.pop(CTX_FOUND_ENTITIES, None)
             await update.message.reply_text(
                 f"{verb} {s_name}: {found[0]}.\nЗагружаю...",
                 reply_markup=reply_keyboard
             )
             await fetch_and_display_schedule(update, context, found[0])
         else:
+            # Сохраняем найденные варианты для последующей проверки
+            user_data[CTX_FOUND_ENTITIES] = found[:20]
             kbd = [[KeyboardButton(e)] for e in found[:20]]
             msg = f"Найдено несколько {p_name}. Выберите вариант:" if len(found) <= 20 else f"Найдено слишком много ({len(found)}). Показаны первые 20:"
             await update.message.reply_text(
@@ -1742,9 +1775,6 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
 
             # Если нет расписания для выбранной недели
             if not week_schedule:
-                await update.callback_query.message.reply_text(
-                    "❌ На выбранной неделе нет занятий."
-                )
                 await progress.finish("⚠️ На выбранной неделе нет занятий.", delete_after=0)
                 return
 
