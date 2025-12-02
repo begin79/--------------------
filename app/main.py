@@ -227,7 +227,7 @@ async def initialize_active_users(context: ContextTypes.DEFAULT_TYPE):
     if db_path.exists():
         size = db_path.stat().st_size
         logger.info(f"   Размер файла: {size / 1024:.2f} KB")
-    
+
     # Получаем статистику по пользователям
     try:
         all_users = db.get_all_users()
@@ -235,7 +235,7 @@ async def initialize_active_users(context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"📊 Статистика базы данных:")
         logger.info(f"   Всего пользователей в базе: {len(all_users)}")
         logger.info(f"   Пользователей с установленной группой/преподавателем: {len(users_with_query)}")
-        
+
         if users_with_query:
             logger.info(f"   Список активных пользователей:")
             for user in users_with_query[:10]:  # Показываем первые 10
@@ -252,7 +252,7 @@ async def initialize_active_users(context: ContextTypes.DEFAULT_TYPE):
         # Получаем пользователей с установленными группами/преподавателями
         users_with_query = db.get_users_with_default_query()
         logger.info(f"🔄 Инициализация активных пользователей: найдено {len(users_with_query)} пользователей с установленной группой/преподавателем")
-        
+
         if 'active_users' not in context.bot_data:
             context.bot_data['active_users'] = set()
         if 'users_data_cache' not in context.bot_data:
@@ -328,7 +328,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 def build_app() -> Application:
     # Оптимизированная настройка приложения для высокой нагрузки
-    persistence = PicklePersistence(filepath="bot_data.pickle")
+    # Используем /data для сохранения данных между перезапусками (Docker)
+    import os
+    pickle_path = os.getenv("BOT_DATA_PATH", "/data/bot_data.pickle")
+    persistence = PicklePersistence(filepath=pickle_path)
 
     # Включаем параллельную обработку обновлений для многопоточности
     app = (
@@ -389,28 +392,30 @@ def main() -> None:
         logger.critical("Необходимо указать корректный токен бота!")
         return
 
-    # Автоматическое добавление первого админа из переменной окружения
-    admin_id_env = os.getenv("ADMIN_ID")
-    if admin_id_env:
+    # Автоматическое добавление первого админа из конфига
+    from .config import ADMIN_ID as config_admin_id
+
+    # Используем значение из конфига (которое уже учитывает переменную окружения)
+    if config_admin_id:
         try:
-            admin_id = int(admin_id_env)
+            admin_id = int(config_admin_id)
             # Проверяем, не добавлен ли уже этот админ
             if not admin_db.is_admin(admin_id):
-                if admin_db.add_admin(admin_id, username=None, added_by=None):
-                    logger.info(f"✅ Администратор {admin_id} автоматически добавлен из переменной окружения ADMIN_ID")
+                if admin_db.add_admin(admin_id, username=None, added_by="system_config"):
+                    logger.info(f"✅ Администратор {admin_id} автоматически добавлен из конфигурации")
                 else:
-                    logger.warning(f"⚠️ Не удалось добавить администратора {admin_id} из переменной окружения")
+                    logger.warning(f"⚠️ Не удалось добавить администратора {admin_id} из конфигурации")
             else:
                 logger.debug(f"Администратор {admin_id} уже существует")
         except ValueError:
-            logger.warning(f"⚠️ Неверный формат ADMIN_ID: {admin_id_env}. Должно быть число.")
+            logger.warning(f"⚠️ Неверный формат ADMIN_ID в конфиге: {config_admin_id}. Должно быть число.")
     else:
         # Проверяем, есть ли хотя бы один админ
         admins = admin_db.get_all_admins()
         if not admins:
             logger.warning("⚠️ ВНИМАНИЕ: Нет ни одного администратора!")
             logger.warning("   Установите переменную окружения ADMIN_ID=<ваш_telegram_id> в панели Amvera")
-            logger.warning("   Или используйте команду: python add_admin.py <ваш_id>")
+            logger.warning("   Или пропишите ADMIN_ID в app/config.py")
 
     app = build_app()
     logger.info("Бот запускается...")
