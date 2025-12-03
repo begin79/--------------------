@@ -97,11 +97,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--start", type=str, help="Переопределить дату начала (формат YYYY-MM-DD)")
     parser.add_argument("--end", type=str, help="Переопределить дату окончания (формат YYYY-MM-DD)")
+    try:
+        from app.config import EXPORTS_DIR
+        default_output = EXPORTS_DIR
+    except ImportError:
+        default_output = "exports"
+
     parser.add_argument(
         "--output",
         type=str,
-        default="exports",
-        help="Каталог для сохранения Excel-файла (по умолчанию exports/)",
+        default=default_output,
+        help=f"Каталог для сохранения Excel-файла (по умолчанию {default_output})",
     )
     parser.add_argument("--filename", type=str, help="Имя файла (по умолчанию генерируется автоматически)")
     parser.add_argument(

@@ -1022,7 +1022,7 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
 
         mode = user_data[CTX_MODE]
         mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
-        
+
         # Проверяем, есть ли сохраненные варианты из предыдущего поиска
         saved_found = user_data.get(CTX_FOUND_ENTITIES, [])
         if saved_found:
@@ -1042,7 +1042,7 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
                 )
                 await fetch_and_display_schedule(update, context, exact_match)
                 return
-        
+
         logger.info(f"🔍 [{user_id}] @{username} → Ищет {mode_text}: '{text}'")
 
         await update.message.reply_chat_action(ChatAction.TYPING)
@@ -2316,7 +2316,7 @@ async def handle_mode_selection(update: Update, context: ContextTypes.DEFAULT_TY
     username = update.effective_user.username or "без username"
     logger.info(f"🎯 [{user_id}] @{username} → Выбран режим: {mode_text}")
     user_data[CTX_MODE] = mode
-    
+
     # ВАЖНО: Явно сбрасываем CTX_AWAITING_DEFAULT_QUERY, если он был установлен ранее
     # Это делается только в handle_set_default_mode (когда пользователь нажимает "Установить/изменить" в настройках)
     # Здесь пользователь просто хочет посмотреть расписание, а не устанавливать группу по умолчанию

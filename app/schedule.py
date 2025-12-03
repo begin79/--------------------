@@ -76,11 +76,11 @@ async def get_schedule(date_str: str, query_value: str, entity_type: Literal["Gr
     try:
         response = await make_request_with_retry(url, schedule_cache, use_cache=use_cache)
     except Exception as e:
-        return None, f"Не удалось получить данные после нескольких попыток: {e}"
+        return None, f"😔 Не удалось загрузить расписание. Попробуйте позже.\n\n💡 Возможные причины:\n• Сайт ВГЛТУ временно недоступен\n• Проблемы с интернет-соединением"
 
-    soup = BeautifulSoup(response.text, "html.parser")
-    # Ищем div с margin-bottom: 25px (с точкой с запятой или без)
-    days_html = soup.find_all("div", style=lambda x: x and "margin-bottom: 25px" in x)
+    soup = BeautifulSoup(response.text, "lxml")
+    # Ищем div с расписанием
+    days_html = find_schedule_divs(soup)
     if not days_html:
         return [not_found_msg], None
 
@@ -213,6 +213,34 @@ async def get_schedule(date_str: str, query_value: str, entity_type: Literal["Gr
 
     return pages, None
 
+def find_schedule_divs(soup: BeautifulSoup) -> List:
+    """
+    Находит div-блоки с расписанием на странице.
+    Использует несколько стратегий поиска для надежности.
+    """
+    # Стратегия 1: Поиск по стилю (оригинальный метод)
+    days_html = soup.find_all("div", style=lambda x: x and "margin-bottom: 25px" in x)
+    if days_html:
+        return days_html
+
+    # Стратегия 2: Поиск по структуре (div > strong с датой)
+    # Ищем div, который содержит strong, текст которого похож на дату
+    candidates = []
+    for div in soup.find_all("div"):
+        strong = div.find("strong", recursive=False)
+        if strong:
+            text = strong.text.strip()
+            # Простая проверка: содержит цифры и точки или название месяца
+            if re.search(r'\d{2}\.\d{2}\.\d{4}', text) or \
+               re.search(r'\d+\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)', text.lower()):
+                candidates.append(div)
+    
+    if candidates:
+        logger.debug(f"Найдено {len(candidates)} дней по альтернативной стратегии (strong tag)")
+        return candidates
+
+    return []
+
 async def get_schedule_structured(date_str: str, query_value: str, entity_type: Literal["Group", "Teacher"]) -> Tuple[Optional[Dict], Optional[str]]:
     """
     Получить структурированное расписание (для экспорта)
@@ -235,11 +263,12 @@ async def get_schedule_structured(date_str: str, query_value: str, entity_type: 
     try:
         response = await make_request_with_retry(url, schedule_cache, use_cache=True)
     except Exception as e:
-        return None, f"Не удалось получить данные: {e}"
+        return None, "😔 Не удалось загрузить расписание. Попробуйте позже."
 
-    soup = BeautifulSoup(response.text, "html.parser")
-    # Ищем div с margin-bottom: 25px (с точкой с запятой или без)
-    days_html = soup.find_all("div", style=lambda x: x and "margin-bottom: 25px" in x)
+    soup = BeautifulSoup(response.text, "lxml")
+    
+    # Ищем div с расписанием
+    days_html = find_schedule_divs(soup)
     if not days_html:
         logger.warning(f"Для {date_str} не найдено div с расписанием в HTML")
         return None, "Расписание не найдено"

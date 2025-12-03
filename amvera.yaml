@@ -1,11 +1,9 @@
----
-version: null
 meta:
-  environment: python
+  environment: docker
   toolchain:
-    name: pip
+    name: docker
     version: latest
 build:
-  requirementsPath: requirements.txt
+  dockerfile: Dockerfile
 run:
-  command: python new_VGLTU_bot.py
+  persistenceMount: /data

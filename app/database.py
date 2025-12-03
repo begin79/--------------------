@@ -13,18 +13,24 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DB_PATH = "/data/users.db"
-DB_PATH: Path
+try:
+    from .config import DB_PATH
+except ImportError:
+    # Fallback if config is not yet available (e.g. during initial setup)
+    DEFAULT_DB_PATH = "/data/users.db"
+    _db_path_env = os.getenv("USERS_DB_PATH")
+    _db_dir_env = os.getenv("USERS_DB_DIR")
+    
+    if _db_path_env:
+        DB_PATH = Path(_db_path_env).expanduser()
+    elif _db_dir_env:
+        DB_PATH = Path(_db_dir_env).expanduser() / "users.db"
+    else:
+        DB_PATH = Path(DEFAULT_DB_PATH)
 
-_db_path_env = os.getenv("USERS_DB_PATH")
-_db_dir_env = os.getenv("USERS_DB_DIR")
-
-if _db_path_env:
-    DB_PATH = Path(_db_path_env).expanduser()
-elif _db_dir_env:
-    DB_PATH = Path(_db_dir_env).expanduser() / "users.db"
-else:
-    DB_PATH = Path(DEFAULT_DB_PATH)
+# Ensure DB_PATH is a Path object
+if isinstance(DB_PATH, str):
+    DB_PATH = Path(DB_PATH)
 
 class UserDatabase:
     """Класс для работы с базой данных пользователей"""
@@ -141,74 +147,77 @@ class UserDatabase:
                   daily_notifications: Optional[bool] = None,
                   notification_time: Optional[str] = None):
         """Сохранить или обновить данные пользователя"""
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                # Проверяем, существует ли пользователь
-                cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
-                exists = cursor.fetchone()
+        with self._lock:
+            try:
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    # Проверяем, существует ли пользователь
+                    cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
+                    exists = cursor.fetchone()
 
-                if exists:
-                    # Обновляем существующего пользователя
-                    updates = []
-                    params = []
+                    if exists:
+                        # Обновляем существующего пользователя
+                        updates = []
+                        params = []
 
-                    if username is not None:
-                        updates.append("username = ?")
-                        params.append(username)
-                    if first_name is not None:
-                        updates.append("first_name = ?")
-                        params.append(first_name)
-                    if last_name is not None:
-                        updates.append("last_name = ?")
-                        params.append(last_name)
-                    if default_query is not None:
-                        updates.append("default_query = ?")
-                        params.append(default_query)
-                    if default_mode is not None:
-                        updates.append("default_mode = ?")
-                        params.append(default_mode)
-                    if daily_notifications is not None:
-                        updates.append("daily_notifications = ?")
-                        params.append(int(daily_notifications))
-                    if notification_time is not None:
-                        updates.append("notification_time = ?")
-                        params.append(notification_time)
+                        if username is not None:
+                            updates.append("username = ?")
+                            params.append(username)
+                        if first_name is not None:
+                            updates.append("first_name = ?")
+                            params.append(first_name)
+                        if last_name is not None:
+                            updates.append("last_name = ?")
+                            params.append(last_name)
+                        if default_query is not None:
+                            updates.append("default_query = ?")
+                            params.append(default_query)
+                        if default_mode is not None:
+                            updates.append("default_mode = ?")
+                            params.append(default_mode)
+                        if daily_notifications is not None:
+                            updates.append("daily_notifications = ?")
+                            params.append(int(daily_notifications))
+                        if notification_time is not None:
+                            updates.append("notification_time = ?")
+                            params.append(notification_time)
 
-                    updates.append("last_active = ?")
-                    params.append(datetime.now().isoformat())
-                    params.append(user_id)
+                        updates.append("last_active = ?")
+                        params.append(datetime.now().isoformat())
+                        params.append(user_id)
 
-                    if updates:
-                        query = f"UPDATE users SET {', '.join(updates)} WHERE user_id = ?"
-                        cursor.execute(query, params)
-                else:
-                    # Создаем нового пользователя
-                    cursor.execute('''
-                        INSERT INTO users (user_id, username, first_name, last_name,
-                                         default_query, default_mode, daily_notifications,
-                                         notification_time, created_at, last_active)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (user_id, username, first_name, last_name, default_query, default_mode,
-                          int(daily_notifications) if daily_notifications else 0,
-                          notification_time or '21:00',
-                          datetime.now().isoformat(), datetime.now().isoformat()))
-                logger.debug(f"Данные пользователя {user_id} сохранены")
-        except Exception as e:
-            logger.error(f"Ошибка сохранения пользователя {user_id}: {e}", exc_info=True)
+                        if updates:
+                            query = f"UPDATE users SET {', '.join(updates)} WHERE user_id = ?"
+                            cursor.execute(query, params)
+                    else:
+                        # Создаем нового пользователя
+                        cursor.execute('''
+                            INSERT INTO users (user_id, username, first_name, last_name,
+                                             default_query, default_mode, daily_notifications,
+                                             notification_time, created_at, last_active)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (user_id, username, first_name, last_name, default_query, default_mode,
+                              int(daily_notifications) if daily_notifications else 0,
+                              notification_time or '21:00',
+                              datetime.now().isoformat(), datetime.now().isoformat()))
+                    logger.debug(f"Данные пользователя {user_id} сохранены")
+            except Exception as e:
+                logger.error(f"Ошибка сохранения пользователя {user_id}: {e}", exc_info=True)
 
     def log_activity(self, user_id: int, action: str, details: Optional[str] = None):
         """Записать действие пользователя в лог"""
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO activity_log (user_id, action, details)
-                    VALUES (?, ?, ?)
-                ''', (user_id, action, details))
-        except Exception as e:
-            # Не логируем ошибки записи активности как критичные - это не должно ломать работу бота
-            logger.debug(f"Ошибка записи активности пользователя {user_id}: {e}")
+        # Логирование может быть частым, используем блокировку
+        with self._lock:
+            try:
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        INSERT INTO activity_log (user_id, action, details)
+                        VALUES (?, ?, ?)
+                    ''', (user_id, action, details))
+            except Exception as e:
+                # Не логируем ошибки записи активности как критичные - это не должно ломать работу бота
+                logger.debug(f"Ошибка записи активности пользователя {user_id}: {e}")
 
     def get_all_users(self) -> list:
         """Получить список всех пользователей"""
@@ -286,14 +295,15 @@ class UserDatabase:
 
     def delete_user(self, user_id: int):
         """Удалить пользователя из базы данных"""
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
-                cursor.execute('DELETE FROM activity_log WHERE user_id = ?', (user_id,))
-                logger.info(f"Пользователь {user_id} удален из базы данных")
-        except Exception as e:
-            logger.error(f"Ошибка удаления пользователя {user_id}: {e}", exc_info=True)
+        with self._lock:
+            try:
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
+                    cursor.execute('DELETE FROM activity_log WHERE user_id = ?', (user_id,))
+                    logger.info(f"Пользователь {user_id} удален из базы данных")
+            except Exception as e:
+                logger.error(f"Ошибка удаления пользователя {user_id}: {e}", exc_info=True)
 
 # Глобальный экземпляр базы данных
 db = UserDatabase()

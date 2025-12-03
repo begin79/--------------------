@@ -1,8 +1,10 @@
-# Используем официальный образ Python
-FROM python:3.11-slim
+# Stage 1: Builder
+FROM python:3.11-slim-bookworm as builder
 
-# Устанавливаем системные зависимости для работы с изображениями и шрифтами
-RUN apt-get update && apt-get install -y \
+WORKDIR /app
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     libjpeg-dev \
@@ -13,25 +15,41 @@ RUN apt-get update && apt-get install -y \
     libtiff5-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Создаем рабочую директорию
+# Install python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# Stage 2: Runtime
+FROM python:3.11-slim-bookworm
+
 WORKDIR /app
 
-# Копируем файл зависимостей
-COPY requirements.txt .
+# Install runtime dependencies (only what's needed for running, not building)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libjpeg62-turbo \
+    zlib1g \
+    libfreetype6 \
+    liblcms2-2 \
+    libopenjp2-7 \
+    libtiff5 \
+    libxml2 \
+    libxslt1.1 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем зависимости Python
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy installed packages from builder
+COPY --from=builder /install /usr/local
 
-# Копируем весь код приложения
+# Copy application code
 COPY . .
 
-# Создаем директорию для данных (база данных, pickle файлы)
-RUN mkdir -p /app/data /data
+# Create data directories
+RUN mkdir -p /data/exports && chmod 777 /data
 
-# Устанавливаем переменные окружения
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    DATA_DIR=/data
 
-# Запускаем бота
+# Run the bot
 CMD ["python", "new_VGLTU_bot.py"]
 

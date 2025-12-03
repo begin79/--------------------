@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "win-ca": "^3.5.1"
+  }
+}

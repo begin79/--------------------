@@ -1086,6 +1086,8 @@ async def admin_broadcast_callback(update: Update, context: ContextTypes.DEFAULT
     await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
     await update.callback_query.answer()
 
+CALLBACK_ADMIN_CONFIRM_BROADCAST = "admin_confirm_broadcast"
+
 async def handle_broadcast_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка ввода сообщения для рассылки"""
     if not update.effective_user or not is_admin(update.effective_user.id):
@@ -1095,7 +1097,47 @@ async def handle_broadcast_input(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     message_text = update.message.text
-    context.user_data.pop('awaiting_broadcast', None)
+    
+    # Защита от случайной отправки команд
+    if message_text.startswith('/'):
+        await update.message.reply_text(
+            "⚠️ <b>Ошибка:</b> Сообщение начинается с '/', что похоже на команду.\n"
+            "Рассылка команд запрещена. Пожалуйста, введите текст сообщения или нажмите 'Отмена'.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    # Сохраняем текст и запрашиваем подтверждение
+    context.user_data['broadcast_message'] = message_text
+    context.user_data.pop('awaiting_broadcast', None) # Снимаем флаг ожидания ввода, теперь ждем подтверждения
+
+    text = (
+        f"📢 <b>Подтверждение рассылки</b>\n\n"
+        f"Вы собираетесь отправить следующее сообщение всем пользователям:\n\n"
+        f"<i>{escape_html(message_text)}</i>\n\n"
+        f"Отправить?"
+    )
+
+    kbd = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Отправить", callback_data=CALLBACK_ADMIN_CONFIRM_BROADCAST)],
+        [InlineKeyboardButton("❌ Отмена", callback_data=CALLBACK_ADMIN_MENU)]
+    ])
+
+    await update.message.reply_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+
+async def admin_confirm_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выполнение рассылки после подтверждения"""
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        return
+
+    message_text = context.user_data.get('broadcast_message')
+    if not message_text:
+        await update.callback_query.answer("⚠️ Сообщение устарело. Попробуйте снова.", show_alert=True)
+        await admin_menu_callback(update, context)
+        return
+
+    # Очищаем сохраненное сообщение
+    context.user_data.pop('broadcast_message', None)
 
     # Получаем всех пользователей
     all_users = db.get_all_users()
@@ -1103,7 +1145,7 @@ async def handle_broadcast_input(update: Update, context: ContextTypes.DEFAULT_T
     total = len(target_ids)
 
     if total == 0:
-        await update.message.reply_text("ℹ️ Пока нет пользователей для рассылки.")
+        await update.callback_query.edit_message_text("ℹ️ Пока нет пользователей для рассылки.")
         return
 
     stored_user_ids = {user.get('user_id') for user in all_users if user.get('user_id')}
@@ -1113,7 +1155,7 @@ async def handle_broadcast_input(update: Update, context: ContextTypes.DEFAULT_T
     if additional_from_log > 0:
         info_suffix = f"\nℹ️ Дополнительно найдено в журнале активности: {additional_from_log}"
 
-    await update.message.reply_text(f"📤 Начинаю рассылку для {total} пользователей...{info_suffix}")
+    await update.callback_query.edit_message_text(f"📤 Начинаю рассылку для {total} пользователей...{info_suffix}")
 
     success = 0
     failed = 0
@@ -1147,7 +1189,8 @@ async def handle_broadcast_input(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_ADMIN_MENU)]
     ])
 
-    await update.message.reply_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+    # Отправляем новое сообщение с результатами, так как предыдущее мы редактировали
+    await update.effective_chat.send_message(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
     logger.info(f"Админ {update.effective_user.id} выполнил рассылку: {success}/{total} успешно")
 
 async def admin_callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1188,6 +1231,8 @@ async def admin_callback_router(update: Update, context: ContextTypes.DEFAULT_TY
         await admin_remove_admin_callback(update, context)
     elif data == CALLBACK_ADMIN_BROADCAST:
         await admin_broadcast_callback(update, context)
+    elif data == CALLBACK_ADMIN_CONFIRM_BROADCAST:
+        await admin_confirm_broadcast_callback(update, context)
     elif data.startswith(CALLBACK_ADMIN_USERS_PAGE_PREFIX):
         try:
             page = int(data.replace(CALLBACK_ADMIN_USERS_PAGE_PREFIX, "", 1))
