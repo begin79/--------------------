@@ -2,7 +2,7 @@ import os
 
 # Конфиг бота
 # Токен задается через переменную окружения BOT_TOKEN
-TOKEN = os.getenv("BOT_TOKEN", "")
+TOKEN = os.getenv("BOT_TOKEN", "8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "Vgltu25_bot")
 
 # Базовые URL для API
