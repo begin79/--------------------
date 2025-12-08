@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfreetype6-dev \
     liblcms2-dev \
     libopenjp2-7-dev \
-    libtiff5-dev \
+    libtiff-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies
@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfreetype6 \
     liblcms2-2 \
     libopenjp2-7 \
-    libtiff5 \
+    libtiff6 \
     libxml2 \
     libxslt1.1 \
     && rm -rf /var/lib/apt/lists/*
