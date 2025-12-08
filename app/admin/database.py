@@ -18,13 +18,17 @@ try:
 except ImportError:
     USERS_DB_PATH = Path("/data/users.db") if os.path.exists("/data") else Path("data/users.db")
 
-DB_PATH = USERS_DB_PATH
+# Ensure DB_PATH is a Path object
+if isinstance(USERS_DB_PATH, str):
+    DB_PATH = Path(USERS_DB_PATH)
+else:
+    DB_PATH = USERS_DB_PATH
 
 class AdminDatabase:
     """Класс для работы с админ-данными в базе данных"""
 
-    def __init__(self, db_path: Path = DB_PATH):
-        self.db_path = db_path
+    def __init__(self, db_path: Path = None):
+        self.db_path = Path(db_path) if db_path else DB_PATH
         self._lock = threading.Lock()  # Блокировка для thread-safety
         try:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
