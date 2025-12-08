@@ -42,6 +42,7 @@ class CallbackData(str, Enum):
     TEACHER_PROFILE = "teacher_profile_"
     HELP_COMMAND_INLINE = "help_command_inline"
     BACK_TO_SCHEDULE = "back_to_schedule_from_export"
+    FEEDBACK = "feedback"
 
 # Префиксы для callback data
 class CallbackPrefix(str, Enum):
@@ -76,6 +77,7 @@ CALLBACK_DATA_EXPORT_DAYS_IMAGES = CallbackData.EXPORT_DAYS_IMAGES.value
 CALLBACK_DATA_EXPORT_SEMESTER = CallbackData.EXPORT_SEMESTER.value
 CALLBACK_DATA_TEACHER_PHOTO = CallbackData.TEACHER_PHOTO.value
 CALLBACK_DATA_TEACHER_PROFILE = CallbackData.TEACHER_PROFILE.value
+CALLBACK_DATA_FEEDBACK = CallbackData.FEEDBACK.value
 
 CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX = CallbackPrefix.REFRESH.value
 CALLBACK_DATA_PREV_SCHEDULE_PREFIX = CallbackPrefix.PREV.value

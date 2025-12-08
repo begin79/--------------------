@@ -7,7 +7,7 @@ import sqlite3
 import logging
 import threading
 from contextlib import contextmanager
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
 from datetime import datetime
 
@@ -101,12 +101,27 @@ class UserDatabase:
                 )
             ''')
 
+            # Таблица отзывов пользователей
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    username TEXT,
+                    first_name TEXT,
+                    message TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            ''')
+
             # Создаем индексы для быстрого поиска
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_activity_user_id ON activity_log(user_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity_log(timestamp)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_default_query ON users(default_query) WHERE default_query IS NOT NULL')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON feedback(user_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at)')
 
             conn.commit()
             conn.close()
@@ -296,6 +311,91 @@ class UserDatabase:
                     logger.info(f"Пользователь {user_id} удален из базы данных")
             except Exception as e:
                 logger.error(f"Ошибка удаления пользователя {user_id}: {e}", exc_info=True)
+
+    def get_last_feedback_time(self, user_id: int) -> Optional[str]:
+        """Получить время последнего отзыва пользователя"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT created_at FROM feedback 
+                    WHERE user_id = ? 
+                    ORDER BY created_at DESC LIMIT 1
+                ''', (user_id,))
+                row = cursor.fetchone()
+                if row:
+                    return row['created_at']
+                return None
+        except Exception as e:
+            logger.error(f"Ошибка получения времени последнего отзыва: {e}", exc_info=True)
+            return None
+
+    def can_leave_feedback(self, user_id: int) -> Tuple[bool, Optional[int]]:
+        """
+        Проверить, может ли пользователь оставить отзыв (1 раз в 24 часа).
+        Возвращает (True, None) если можно, (False, seconds_left) если нужно подождать.
+        """
+        from datetime import datetime, timedelta
+        try:
+            last_feedback = self.get_last_feedback_time(user_id)
+            if not last_feedback:
+                return (True, None)
+            
+            # Парсим время последнего отзыва
+            if isinstance(last_feedback, str):
+                last_time = datetime.fromisoformat(last_feedback.replace('Z', '+00:00'))
+            else:
+                last_time = last_feedback
+            
+            # Убираем timezone для сравнения
+            if last_time.tzinfo:
+                last_time = last_time.replace(tzinfo=None)
+            
+            next_allowed = last_time + timedelta(hours=24)
+            now = datetime.utcnow()
+            
+            if now >= next_allowed:
+                return (True, None)
+            
+            seconds_left = int((next_allowed - now).total_seconds())
+            return (False, seconds_left)
+        except Exception as e:
+            logger.error(f"Ошибка проверки возможности оставить отзыв: {e}", exc_info=True)
+            return (True, None)  # В случае ошибки разрешаем
+
+    def save_feedback(self, user_id: int, message: str, 
+                      username: Optional[str] = None, first_name: Optional[str] = None) -> bool:
+        """Сохранить отзыв пользователя"""
+        with self._lock:
+            try:
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        INSERT INTO feedback (user_id, username, first_name, message)
+                        VALUES (?, ?, ?, ?)
+                    ''', (user_id, username, first_name, message))
+                    logger.info(f"Сохранен отзыв от пользователя {user_id}")
+                    return True
+            except Exception as e:
+                logger.error(f"Ошибка сохранения отзыва: {e}", exc_info=True)
+                return False
+
+    def get_all_feedback(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Получить все отзывы (для администратора)"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT id, user_id, username, first_name, message, created_at
+                    FROM feedback
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                ''', (limit,))
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка получения отзывов: {e}", exc_info=True)
+            return []
 
 # Глобальный экземпляр базы данных
 db = UserDatabase()

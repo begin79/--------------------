@@ -24,7 +24,7 @@ from .constants import (
     CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX,
     CALLBACK_DATA_EXPORT_WEEK_IMAGE, CALLBACK_DATA_EXPORT_WEEK_FILE, CALLBACK_DATA_EXPORT_MENU,
     CALLBACK_DATA_EXPORT_DAYS_IMAGES, CALLBACK_DATA_EXPORT_SEMESTER,
-    CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX,
+    CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX, CALLBACK_DATA_FEEDBACK,
     API_TYPE_GROUP, API_TYPE_TEACHER, GROUP_NAME_PATTERN, CallbackData,
     MODE_STUDENT, MODE_TEACHER, ENTITY_GROUP, ENTITY_GROUPS, ENTITY_GROUP_GENITIVE,
     ENTITY_TEACHER, ENTITY_TEACHER_GENITIVE, ENTITY_STUDENT,
@@ -768,6 +768,7 @@ async def settings_menu_callback(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton("Установить/изменить преподавателя", callback_data="set_default_mode_teacher")],
         [InlineKeyboardButton(f"{'✅' if is_daily else '❌'} Ежедневные уведомления", callback_data=CALLBACK_DATA_TOGGLE_DAILY)],
         [InlineKeyboardButton("⏰ Изменить время уведомлений", callback_data="set_notification_time")],
+        [InlineKeyboardButton("💬 Оставить отзыв", callback_data=CALLBACK_DATA_FEEDBACK)],
         [InlineKeyboardButton("♻️ Сбросить настройки", callback_data="reset_settings")],
         [InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_DATA_BACK_TO_START)]
     ])
@@ -823,6 +824,10 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text("✅ Ответ администратору отменён.")
         else:
             await process_user_reply_to_admin_message(update, context, pending_admin_id, text)
+        return
+
+    # Проверяем, ожидается ли отзыв
+    if await process_feedback_message(update, context, text):
         return
 
     # Проверяем, не занят ли пользователь
@@ -2397,6 +2402,104 @@ async def handle_reset_execute(update: Update, context: ContextTypes.DEFAULT_TYP
     await safe_answer_callback_query(update.callback_query, "Настройки сброшены.")
     await settings_menu_callback(update, context)
 
+async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str = None):
+    """Обработчик кнопки 'Оставить отзыв'"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "без username"
+    
+    # Проверяем, можно ли оставить отзыв (1 раз в 24 часа)
+    can_feedback, seconds_left = db.can_leave_feedback(user_id)
+    
+    if not can_feedback:
+        # Вычисляем, сколько осталось ждать
+        hours_left = seconds_left // 3600
+        minutes_left = (seconds_left % 3600) // 60
+        
+        if hours_left > 0:
+            time_str = f"{hours_left} ч. {minutes_left} мин."
+        else:
+            time_str = f"{minutes_left} мин."
+        
+        await safe_answer_callback_query(
+            update.callback_query,
+            f"⏳ Вы уже оставляли отзыв. Следующий можно оставить через {time_str}",
+            show_alert=True
+        )
+        return
+    
+    # Устанавливаем флаг ожидания отзыва
+    context.user_data["awaiting_feedback"] = True
+    
+    text = (
+        "💬 <b>Оставить отзыв</b>\n\n"
+        "Напишите ваш отзыв, пожелание или предложение по улучшению бота.\n\n"
+        "📝 Просто отправьте сообщение в этот чат.\n\n"
+        "<i>Отзыв можно оставлять 1 раз в сутки.</i>"
+    )
+    
+    kbd = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Отмена", callback_data=CALLBACK_DATA_SETTINGS_MENU)]
+    ])
+    
+    await safe_edit_message_text(update.callback_query, text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+    await safe_answer_callback_query(update.callback_query)
+    logger.info(f"💬 [{user_id}] @{username} → Открыл форму отзыва")
+
+async def process_feedback_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
+    """
+    Обработка текстового сообщения как отзыва.
+    Возвращает True если сообщение было обработано как отзыв.
+    """
+    user_data = context.user_data
+    
+    if not user_data.get("awaiting_feedback"):
+        return False
+    
+    user_id = update.effective_user.id
+    username = update.effective_user.username
+    first_name = update.effective_user.first_name
+    
+    # Сбрасываем флаг ожидания
+    user_data.pop("awaiting_feedback", None)
+    
+    # Проверяем ещё раз лимит (на случай спама)
+    can_feedback, _ = db.can_leave_feedback(user_id)
+    if not can_feedback:
+        await update.message.reply_text("⏳ Вы уже оставляли отзыв сегодня. Попробуйте завтра!")
+        return True
+    
+    # Сохраняем отзыв
+    success = db.save_feedback(user_id, text, username, first_name)
+    
+    if success:
+        await update.message.reply_text(
+            "✅ Спасибо за ваш отзыв!\n\n"
+            "Мы обязательно его прочитаем и учтём ваши пожелания.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ В настройки", callback_data=CALLBACK_DATA_SETTINGS_MENU)]
+            ])
+        )
+        logger.info(f"✅ [{user_id}] @{username} → Оставил отзыв: {text[:50]}...")
+        
+        # Уведомляем администратора о новом отзыве
+        try:
+            from .admin.utils import get_root_admin_id
+            admin_id = get_root_admin_id()
+            if admin_id:
+                admin_text = (
+                    f"📬 <b>Новый отзыв</b>\n\n"
+                    f"👤 От: {first_name or 'Без имени'} (@{username or 'без username'})\n"
+                    f"🆔 ID: <code>{user_id}</code>\n\n"
+                    f"💬 <i>{escape_html(text[:500])}</i>"
+                )
+                await context.bot.send_message(admin_id, admin_text, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.warning(f"Не удалось уведомить админа о отзыве: {e}")
+    else:
+        await update.message.reply_text("❌ Не удалось сохранить отзыв. Попробуйте позже.")
+    
+    return True
+
 async def handle_back_to_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     """Возврат к расписанию из экспорта"""
     user_id = update.effective_user.id
@@ -2500,6 +2603,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         CALLBACK_DATA_TOGGLE_DAILY: lambda u, c, d: toggle_daily_notifications_callback(u, c),  # принимает 2
         "set_notification_time": lambda u, c, d: show_notification_time_menu(u, c),  # принимает 2
         CALLBACK_DATA_CANCEL_INPUT: handle_cancel_input,
+        CALLBACK_DATA_FEEDBACK: feedback_callback,
         CallbackData.BACK_TO_SCHEDULE.value: handle_back_to_schedule,
         "back_to_schedule_from_export": handle_back_to_schedule,
     }
