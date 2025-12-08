@@ -2,7 +2,7 @@ import os
 
 # Конфиг бота
 # Токен задается через переменную окружения BOT_TOKEN
-TOKEN = os.getenv("BOT_TOKEN", "8194773918:AAG5iENAZ3vYq-jal6NUwgCYgBV4NuTxS5s")
+TOKEN = os.getenv("BOT_TOKEN", "")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "Vgltu25_bot")
 
 # Базовые URL для API
@@ -18,7 +18,8 @@ ADMIN_ID = os.getenv("ADMIN_ID")
 if os.path.exists("/data"):
     DATA_DIR = "/data"
 else:
-    DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+    # Используем абсолютный путь для локальной разработки
+    DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 
 # Убедимся, что директория существует
 os.makedirs(DATA_DIR, exist_ok=True)

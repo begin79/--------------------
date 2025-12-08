@@ -14,16 +14,9 @@ logger = logging.getLogger(__name__)
 
 # Используем ту же БД, что и основной бот
 try:
-    from ..database import DB_PATH as USERS_DB_PATH
-except Exception:
-    _db_path_env = os.getenv("USERS_DB_PATH")
-    _db_dir_env = os.getenv("USERS_DB_DIR")
-    if _db_path_env:
-        USERS_DB_PATH = Path(_db_path_env).expanduser()
-    elif _db_dir_env:
-        USERS_DB_PATH = Path(_db_dir_env).expanduser() / "users.db"
-    else:
-        USERS_DB_PATH = Path("/data/users.db")
+    from ..config import DB_PATH as USERS_DB_PATH
+except ImportError:
+    USERS_DB_PATH = Path("/data/users.db") if os.path.exists("/data") else Path("data/users.db")
 
 DB_PATH = USERS_DB_PATH
 

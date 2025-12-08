@@ -16,17 +16,9 @@ logger = logging.getLogger(__name__)
 try:
     from .config import DB_PATH
 except ImportError:
-    # Fallback if config is not yet available (e.g. during initial setup)
-    DEFAULT_DB_PATH = "/data/users.db"
-    _db_path_env = os.getenv("USERS_DB_PATH")
-    _db_dir_env = os.getenv("USERS_DB_DIR")
-    
-    if _db_path_env:
-        DB_PATH = Path(_db_path_env).expanduser()
-    elif _db_dir_env:
-        DB_PATH = Path(_db_dir_env).expanduser() / "users.db"
-    else:
-        DB_PATH = Path(DEFAULT_DB_PATH)
+    # Fallback на случай проблем с импортом, но в норме config должен работать
+    DEFAULT_DB_PATH = "/data/users.db" if os.path.exists("/data") else "data/users.db"
+    DB_PATH = Path(DEFAULT_DB_PATH)
 
 # Ensure DB_PATH is a Path object
 if isinstance(DB_PATH, str):
