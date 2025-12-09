@@ -2604,30 +2604,16 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         # Форматируем время в формате чч:мм:сс
         time_str = f"{hours_left:02d}:{minutes_left:02d}:{seconds_remaining:02d}"
 
-        # Показываем сообщение в чате (редактируем текущее сообщение)
-        text = (
-            "⏳ <b>Отзыв уже оставлен</b>\n\n"
-            f"Вы уже оставляли отзыв. Следующий можно оставить через:\n\n"
-            f"<b>⏰ {time_str}</b>\n\n"
-            f"<i>Повторите попытку через указанное время.</i>"
-        )
-
-        kbd = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ В настройки", callback_data=CALLBACK_DATA_SETTINGS_MENU)]
-        ])
-
-        await safe_edit_message_text(
-            update.callback_query,
-            text,
-            reply_markup=kbd,
-            parse_mode=ParseMode.HTML
-        )
+        # Показываем всплывающее уведомление (как при переключении уведомлений)
         await safe_answer_callback_query(
             update.callback_query,
-            f"⏳ Повторите через {time_str}",
-            show_alert=True
+            f"⏳ Вы уже оставляли отзыв. Повторите через {time_str}",
+            show_alert=False
         )
         logger.info(f"⏳ [{user_id}] @{username} → Попытка оставить отзыв (ограничение: {time_str})")
+        
+        # Возвращаемся в меню настроек (как при переключении уведомлений)
+        await settings_menu_callback(update, context)
         return
 
     # Устанавливаем флаг ожидания отзыва
