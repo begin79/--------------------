@@ -2612,8 +2612,6 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         )
         logger.info(f"⏳ [{user_id}] @{username} → Попытка оставить отзыв (ограничение: {time_str})")
 
-        # Возвращаемся в меню настроек (как при переключении уведомлений)
-        await settings_menu_callback(update, context)
         return
 
     # Устанавливаем флаг ожидания отзыва
