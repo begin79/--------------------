@@ -2604,11 +2604,12 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         # Форматируем время в формате чч:мм:сс
         time_str = f"{hours_left:02d}:{minutes_left:02d}:{seconds_remaining:02d}"
 
-        # Показываем всплывающее уведомление (toast) - как при переключении уведомлений
-        # show_alert=False (по умолчанию) создает toast-уведомление, которое появляется и исчезает
+        # Показываем всплывающее уведомление. Используем show_alert=True,
+        # чтобы сообщение гарантированно появилось (как системный popup в Telegram).
         await safe_answer_callback_query(
             update.callback_query,
-            f"⏳ Повторите через {time_str}"
+            f"⏳ Повторите через {time_str}",
+            show_alert=True
         )
         logger.info(f"⏳ [{user_id}] @{username} → Попытка оставить отзыв (ограничение: {time_str})")
 
