@@ -1806,9 +1806,11 @@ async def setup_export_process(
 
     # 3. Проверка блокировки
     if is_user_busy(user_data):
-        logger.warning(f"setup_export_process: Пользователь занят")
-        await safe_answer_callback_query(update.callback_query, "⏳ Пожалуйста, подождите...")
-        return None, None, None, 0, False
+        logger.warning(f"setup_export_process: Пользователь занят, но продолжаю (возможно, флаг не сбросился)")
+        # Принудительно сбрасываем busy флаг, если он остался установленным
+        # Это защита от "зависших" флагов после ошибок
+        clear_user_busy_state(user_data)
+        logger.info(f"setup_export_process: Busy флаг сброшен, продолжаю экспорт")
 
     # 4. Ответ на callback (блокировку ставим через context manager в вызывающем коде)
     await safe_answer_callback_query(update.callback_query, progress_text)
@@ -2298,117 +2300,117 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if is_user_busy(user_data):
-        await safe_answer_callback_query(update.callback_query, "⏳ Уже генерирую другой экспорт, подождите...")
-        return
+        logger.warning(f"export_semester_excel: Пользователь занят, но продолжаю (возможно, флаг не сбросился)")
+        # Принудительно сбрасываем busy флаг, если он остался установленным
+        # Это защита от "зависших" флагов после ошибок
+        clear_user_busy_state(user_data)
 
     await safe_answer_callback_query(update.callback_query, "Готовлю Excel...")
-    set_user_busy(user_data, True)
     progress = ExportProgress(update.callback_query.message)
     await progress.start("⏳ Собираю данные семестра...")
     logger.info(f"export_semester_excel: Начинаю экспорт семестра для {entity_name} (semester_option={semester_option})")
 
-    try:
-        semester_key = None if semester_option == "auto" else semester_option
-        start_date, end_date, semester_label = resolve_semester_bounds(semester_key, None, None, None)
-        logger.info(f"export_semester_excel: Семестр: {semester_label}, период: {start_date} - {end_date}")
-        await progress.update(20, f"📅 {semester_label}")
-
-        entity_type = API_TYPE_GROUP if mode == "student" else API_TYPE_TEACHER
-        logger.info(f"export_semester_excel: Запрашиваю расписание для {entity_name} (тип: {entity_type})")
-        timetable = await fetch_semester_schedule(entity_name, entity_type, start_date, end_date)
-        logger.info(f"export_semester_excel: Получено расписаний: {len(timetable) if timetable else 0}")
-
-        if not timetable:
-            logger.warning(f"export_semester_excel: Нет расписания для периода")
-            await progress.finish("📅 За период нет занятий.", delete_after=0)
-            await update.callback_query.message.reply_text("❌ За выбранный период нет занятий.")
-            return
-
-        await progress.update(55, "📘 Формирую Excel...")
-        logger.info(f"export_semester_excel: Начинаю построение Excel")
-        workbook, per_group_rows, per_teacher_rows, total_hours, per_group_hours, per_teacher_hours = build_excel_workbook(
-            entity_name, mode, semester_label, timetable
-        )
-        logger.info(f"export_semester_excel: Excel построен, всего часов: {total_hours:.1f}")
-
-        main_buffer = BytesIO()
-        workbook.save(main_buffer)
-        main_buffer.seek(0)
-        filename = f"{sanitize_filename(entity_name)}_{semester_label.replace(' ', '_')}.xlsx"
-        entity_label = ENTITY_TEACHER_GENITIVE if mode == MODE_TEACHER else ENTITY_GROUP_GENITIVE
-        caption = (
-            f"📊 Семестр ({semester_label}) для {entity_label}: <b>{escape_html(entity_name)}</b>\n"
-            f"🕒 Всего часов: {total_hours:.1f}"
-        )
-
-        user_data["export_back_mode"] = mode
-        user_data["export_back_query"] = entity_name
-        export_date = user_data.get(CTX_SELECTED_DATE, datetime.date.today().strftime("%Y-%m-%d"))
-        user_data["export_back_date"] = export_date
-        if user_data.get(CTX_SCHEDULE_PAGES):
-            user_data["export_back_pages"] = user_data[CTX_SCHEDULE_PAGES]
-            user_data["export_back_page_index"] = user_data.get(CTX_CURRENT_PAGE_INDEX, 0)
-
-        back_kbd = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Назад к расписанию", callback_data=CallbackData.BACK_TO_SCHEDULE.value)],
-            [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
-        ])
-
-        await progress.update(80, "📤 Отправляю файл...")
-        logger.info(f"export_semester_excel: Отправляю Excel файл пользователю")
+    # Используем context manager для гарантированного снятия блокировки
+    with user_busy_context(user_data):
         try:
-            await update.callback_query.message.reply_document(
-                document=main_buffer,
-                filename=filename,
-                caption=caption,
-                parse_mode=ParseMode.HTML,
-                reply_markup=back_kbd
+            semester_key = None if semester_option == "auto" else semester_option
+            start_date, end_date, semester_label = resolve_semester_bounds(semester_key, None, None, None)
+            logger.info(f"export_semester_excel: Семестр: {semester_label}, период: {start_date} - {end_date}")
+            await progress.update(20, f"📅 {semester_label}")
+
+            entity_type = API_TYPE_GROUP if mode == "student" else API_TYPE_TEACHER
+            logger.info(f"export_semester_excel: Запрашиваю расписание для {entity_name} (тип: {entity_type})")
+            timetable = await fetch_semester_schedule(entity_name, entity_type, start_date, end_date)
+            logger.info(f"export_semester_excel: Получено расписаний: {len(timetable) if timetable else 0}")
+
+            if not timetable:
+                logger.warning(f"export_semester_excel: Нет расписания для периода")
+                await progress.finish("📅 За период нет занятий.", delete_after=0)
+                await update.callback_query.message.reply_text("❌ За выбранный период нет занятий.")
+                return
+
+            await progress.update(55, "📘 Формирую Excel...")
+            logger.info(f"export_semester_excel: Начинаю построение Excel")
+            workbook, per_group_rows, per_teacher_rows, total_hours, per_group_hours, per_teacher_hours = build_excel_workbook(
+                entity_name, mode, semester_label, timetable
             )
-            logger.info(f"export_semester_excel: Excel файл успешно отправлен")
-        except Exception as send_error:
-            logger.error(f"export_semester_excel: Ошибка при отправке файла: {send_error}", exc_info=True)
-            try:
-                await update.callback_query.message.reply_text(
-                    f"❌ Ошибка при отправке файла. Попробуйте позже.",
-                    reply_markup=back_kbd
-                )
-            except Exception:
-                pass
-            try:
-                await progress.finish("❌ Ошибка при отправке файла.", delete_after=0)
-            except Exception:
-                pass
-            return
+            logger.info(f"export_semester_excel: Excel построен, всего часов: {total_hours:.1f}")
 
-        if mode == MODE_TEACHER and per_group_rows:
-            zip_bytes, groups_count = build_group_archive_bytes(per_group_rows, per_group_hours, entity_name, semester_label)
-            if zip_bytes and groups_count:
-                await progress.update(90, "📦 Упаковываю группы...")
-                zip_stream = BytesIO(zip_bytes)
-                zip_filename = f"{sanitize_filename(entity_name)}_{semester_label.replace(' ', '_')}_groups.zip"
-                zip_caption = f"📁 Отдельные файлы по {groups_count} группам"
+            main_buffer = BytesIO()
+            workbook.save(main_buffer)
+            main_buffer.seek(0)
+            filename = f"{sanitize_filename(entity_name)}_{semester_label.replace(' ', '_')}.xlsx"
+            entity_label = ENTITY_TEACHER_GENITIVE if mode == MODE_TEACHER else ENTITY_GROUP_GENITIVE
+            caption = (
+                f"📊 Семестр ({semester_label}) для {entity_label}: <b>{escape_html(entity_name)}</b>\n"
+                f"🕒 Всего часов: {total_hours:.1f}"
+            )
+
+            user_data["export_back_mode"] = mode
+            user_data["export_back_query"] = entity_name
+            export_date = user_data.get(CTX_SELECTED_DATE, datetime.date.today().strftime("%Y-%m-%d"))
+            user_data["export_back_date"] = export_date
+            if user_data.get(CTX_SCHEDULE_PAGES):
+                user_data["export_back_pages"] = user_data[CTX_SCHEDULE_PAGES]
+                user_data["export_back_page_index"] = user_data.get(CTX_CURRENT_PAGE_INDEX, 0)
+
+            back_kbd = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад к расписанию", callback_data=CallbackData.BACK_TO_SCHEDULE.value)],
+                [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+            ])
+
+            await progress.update(80, "📤 Отправляю файл...")
+            logger.info(f"export_semester_excel: Отправляю Excel файл пользователю")
+            try:
                 await update.callback_query.message.reply_document(
-                    document=zip_stream,
-                    filename=zip_filename,
-                    caption=zip_caption,
+                    document=main_buffer,
+                    filename=filename,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
                     reply_markup=back_kbd
                 )
+                logger.info(f"export_semester_excel: Excel файл успешно отправлен")
+            except Exception as send_error:
+                logger.error(f"export_semester_excel: Ошибка при отправке файла: {send_error}", exc_info=True)
+                try:
+                    await update.callback_query.message.reply_text(
+                        f"❌ Ошибка при отправке файла. Попробуйте позже.",
+                        reply_markup=back_kbd
+                    )
+                except Exception:
+                    pass
+                try:
+                    await progress.finish("❌ Ошибка при отправке файла.", delete_after=0)
+                except Exception:
+                    pass
+                return
 
-        await progress.finish("✅ Экспорт готов!")
-        logger.info(f"export_semester_excel: Экспорт успешно завершен")
-    except Exception as exc:
-        logger.error(f"❌ Ошибка при экспорте семестра: {exc}", exc_info=True)
-        try:
-            await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
-        except Exception as progress_error:
-            logger.error(f"Ошибка при завершении прогресса: {progress_error}")
-        try:
-            await update.callback_query.message.reply_text("❌ Произошла ошибка при экспорте. Попробуйте позже.")
-        except Exception as reply_error:
-            logger.error(f"Ошибка при отправке сообщения об ошибке: {reply_error}")
-    finally:
-        set_user_busy(user_data, False)
-        logger.debug(f"Блокировка снята для пользователя {update.effective_user.id if update.effective_user else 'unknown'}")
+            if mode == MODE_TEACHER and per_group_rows:
+                zip_bytes, groups_count = build_group_archive_bytes(per_group_rows, per_group_hours, entity_name, semester_label)
+                if zip_bytes and groups_count:
+                    await progress.update(90, "📦 Упаковываю группы...")
+                    zip_stream = BytesIO(zip_bytes)
+                    zip_filename = f"{sanitize_filename(entity_name)}_{semester_label.replace(' ', '_')}_groups.zip"
+                    zip_caption = f"📁 Отдельные файлы по {groups_count} группам"
+                    await update.callback_query.message.reply_document(
+                        document=zip_stream,
+                        filename=zip_filename,
+                        caption=zip_caption,
+                        reply_markup=back_kbd
+                    )
+
+            await progress.finish("✅ Экспорт готов!")
+            logger.info(f"export_semester_excel: Экспорт успешно завершен")
+        except Exception as exc:
+            logger.error(f"❌ Ошибка при экспорте семестра: {exc}", exc_info=True)
+            try:
+                await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
+            except Exception as progress_error:
+                logger.error(f"Ошибка при завершении прогресса: {progress_error}")
+            try:
+                await update.callback_query.message.reply_text("❌ Произошла ошибка при экспорте. Попробуйте позже.")
+            except Exception as reply_error:
+                logger.error(f"Ошибка при отправке сообщения об ошибке: {reply_error}")
 
 # Вспомогательные функции для callback_router
 async def handle_confirm_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
