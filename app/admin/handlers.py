@@ -48,6 +48,7 @@ CALLBACK_ADMIN_REMOVE_ADMIN = "admin_remove_admin"
 CALLBACK_ADMIN_LIST_ADMINS = "admin_list_admins"
 CALLBACK_ADMIN_CONFIRM_TOGGLE = "admin_confirm_toggle"
 CALLBACK_ADMIN_CANCEL_TOGGLE = "admin_cancel_toggle"
+CALLBACK_ADMIN_EXIT = "admin_exit"
 
 USERS_PAGE_SIZE = 5  # Уменьшено для удобства навигации
 
@@ -116,6 +117,16 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ У вас нет прав администратора.")
         return
 
+    # Очищаем все флаги ожидания ввода при возврате в меню
+    # Это предотвращает случайную отправку рассылки или других действий
+    context.user_data.pop('awaiting_broadcast', None)
+    context.user_data.pop('broadcast_message', None)
+    context.user_data.pop('awaiting_maintenance_msg', None)
+    context.user_data.pop('awaiting_admin_id', None)
+    context.user_data.pop('awaiting_remove_admin_id', None)
+    context.user_data.pop('awaiting_user_search', None)
+    context.user_data.pop('awaiting_direct_message', None)
+
     # Получаем статус бота
     bot_status = admin_db.get_bot_status()
     status_emoji = "🟢" if bot_status.get('is_enabled', True) else "🔴"
@@ -142,6 +153,7 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton("💬 Массовая рассылка", callback_data=CALLBACK_ADMIN_BROADCAST)],
         [InlineKeyboardButton("🗑️ Очистить кеш", callback_data=CALLBACK_ADMIN_CACHE)],
         [InlineKeyboardButton("👨‍💼 Управление админами", callback_data=CALLBACK_ADMIN_LIST_ADMINS)],
+        [InlineKeyboardButton("🚪 Выйти из админ-панели", callback_data=CALLBACK_ADMIN_EXIT)],
     ])
 
     if update.callback_query:
@@ -565,6 +577,42 @@ async def admin_user_details_callback(
         f"Время уведомлений: {notification_time}",
         "",
     ]
+
+    # Получаем последний отзыв пользователя
+    last_feedback = db.get_last_feedback(user_id)
+    if last_feedback:
+        feedback_date = format_timestamp(last_feedback.get("created_at"))
+        feedback_text = last_feedback.get("message", "")[:100]
+        if len(last_feedback.get("message", "")) > 100:
+            feedback_text += "..."
+        text_lines.append("💬 <b>Последний отзыв:</b>")
+        text_lines.append(f"   {feedback_date}")
+        text_lines.append(f"   <i>{escape_html(feedback_text)}</i>")
+        text_lines.append("")
+
+    # Получаем последний поиск/запрос расписания
+    last_search = db.get_last_activity(user_id, "schedule")
+    if not last_search:
+        last_search = db.get_last_activity(user_id, "search")
+    if not last_search:
+        last_search = db.get_last_activity(user_id)
+
+    if last_search:
+        search_action = last_search.get("action", "")
+        search_details = last_search.get("details", "")
+        search_time = format_timestamp(last_search.get("timestamp"))
+
+        # Определяем успешность по действию
+        success_indicator = "✅" if "success" in search_action.lower() or "schedule" in search_action.lower() else "❓"
+
+        text_lines.append(f"{success_indicator} <b>Последний поиск:</b>")
+        text_lines.append(f"   {search_time}")
+        if search_details:
+            details_short = search_details[:80]
+            if len(search_details) > 80:
+                details_short += "..."
+            text_lines.append(f"   <code>{escape_html(details_short)}</code>")
+        text_lines.append("")
 
     if username == "без username":
         text_lines.append("ℹ️ Пользователь скрывает свой username в Telegram.")
@@ -1089,15 +1137,28 @@ async def admin_broadcast_callback(update: Update, context: ContextTypes.DEFAULT
 CALLBACK_ADMIN_CONFIRM_BROADCAST = "admin_confirm_broadcast"
 
 async def handle_broadcast_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ввода сообщения для рассылки"""
+    """Обработка ввода сообщения для рассылки с улучшенной защитой"""
     if not update.effective_user or not is_admin(update.effective_user.id):
         return
 
+    # ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА: Проверяем флаг ожидания рассылки
     if not context.user_data.get('awaiting_broadcast'):
+        # Если флаг не установлен, но пользователь пытается отправить сообщение,
+        # это может быть случайная отправка - игнорируем
+        logger.warning(f"Попытка отправки рассылки без флага awaiting_broadcast от пользователя {update.effective_user.id}")
         return
 
-    message_text = update.message.text
-    
+    message_text = update.message.text.strip() if update.message.text else ""
+
+    # Защита от пустых сообщений
+    if not message_text:
+        await update.message.reply_text(
+            "⚠️ <b>Ошибка:</b> Сообщение не может быть пустым.\n"
+            "Пожалуйста, введите текст сообщения или нажмите 'Отмена'.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
     # Защита от случайной отправки команд
     if message_text.startswith('/'):
         await update.message.reply_text(
@@ -1107,37 +1168,73 @@ async def handle_broadcast_input(update: Update, context: ContextTypes.DEFAULT_T
         )
         return
 
+    # Защита от слишком коротких сообщений (возможно случайная отправка)
+    if len(message_text) < 3:
+        await update.message.reply_text(
+            "⚠️ <b>Ошибка:</b> Сообщение слишком короткое (менее 3 символов).\n"
+            "Пожалуйста, введите полный текст сообщения или нажмите 'Отмена'.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
     # Сохраняем текст и запрашиваем подтверждение
     context.user_data['broadcast_message'] = message_text
     context.user_data.pop('awaiting_broadcast', None) # Снимаем флаг ожидания ввода, теперь ждем подтверждения
 
+    # Получаем количество пользователей для информации
+    target_ids = db.get_all_known_user_ids(include_activity_log=True)
+    total = len(target_ids)
+
     text = (
         f"📢 <b>Подтверждение рассылки</b>\n\n"
-        f"Вы собираетесь отправить следующее сообщение всем пользователям:\n\n"
+        f"Вы собираетесь отправить следующее сообщение <b>всем {total} пользователям</b>:\n\n"
         f"<i>{escape_html(message_text)}</i>\n\n"
-        f"Отправить?"
+        f"⚠️ <b>Внимание:</b> Это действие нельзя отменить!\n\n"
+        f"Отправить рассылку?"
     )
 
     kbd = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Отправить", callback_data=CALLBACK_ADMIN_CONFIRM_BROADCAST)],
+        [InlineKeyboardButton("✅ Да, отправить всем", callback_data=CALLBACK_ADMIN_CONFIRM_BROADCAST)],
         [InlineKeyboardButton("❌ Отмена", callback_data=CALLBACK_ADMIN_MENU)]
     ])
 
     await update.message.reply_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
 
 async def admin_confirm_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполнение рассылки после подтверждения"""
+    """Выполнение рассылки после подтверждения с дополнительной защитой"""
     if not update.effective_user or not is_admin(update.effective_user.id):
         return
 
+    # ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА: Проверяем наличие сообщения
     message_text = context.user_data.get('broadcast_message')
     if not message_text:
         await update.callback_query.answer("⚠️ Сообщение устарело. Попробуйте снова.", show_alert=True)
+        # Очищаем все флаги рассылки
+        context.user_data.pop('broadcast_message', None)
+        context.user_data.pop('awaiting_broadcast', None)
         await admin_menu_callback(update, context)
         return
 
-    # Очищаем сохраненное сообщение
+    # ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА: Проверяем валидность сообщения
+    message_text = message_text.strip()
+    if not message_text or len(message_text) < 3:
+        await update.callback_query.answer("⚠️ Сообщение некорректно. Попробуйте снова.", show_alert=True)
+        context.user_data.pop('broadcast_message', None)
+        context.user_data.pop('awaiting_broadcast', None)
+        await admin_menu_callback(update, context)
+        return
+
+    # ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА: Защита от команд
+    if message_text.startswith('/'):
+        await update.callback_query.answer("⚠️ Нельзя рассылать команды!", show_alert=True)
+        context.user_data.pop('broadcast_message', None)
+        context.user_data.pop('awaiting_broadcast', None)
+        await admin_menu_callback(update, context)
+        return
+
+    # Очищаем сохраненное сообщение ПЕРЕД отправкой
     context.user_data.pop('broadcast_message', None)
+    context.user_data.pop('awaiting_broadcast', None)
 
     # Получаем всех пользователей
     all_users = db.get_all_users()
@@ -1193,6 +1290,38 @@ async def admin_confirm_broadcast_callback(update: Update, context: ContextTypes
     await update.effective_chat.send_message(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
     logger.info(f"Админ {update.effective_user.id} выполнил рассылку: {success}/{total} успешно")
 
+async def admin_exit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выход из админ-панели - возврат к обычному режиму"""
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        return
+
+    # Очищаем все флаги админ-панели
+    context.user_data.pop('awaiting_broadcast', None)
+    context.user_data.pop('broadcast_message', None)
+    context.user_data.pop('awaiting_maintenance_msg', None)
+    context.user_data.pop('awaiting_admin_id', None)
+    context.user_data.pop('awaiting_remove_admin_id', None)
+    context.user_data.pop('awaiting_user_search', None)
+    context.user_data.pop('awaiting_direct_message', None)
+
+    # Импортируем start_command из handlers
+    from ..handlers import start_command
+
+    if update.callback_query:
+        await update.callback_query.answer("Вы вышли из админ-панели")
+        try:
+            await update.callback_query.edit_message_text(
+                "✅ Вы вышли из админ-панели.\n\nИспользуйте /start для начала работы.",
+                reply_markup=None
+            )
+        except Exception:
+            pass
+        # Отправляем команду /start
+        await start_command(update, context)
+    else:
+        await update.message.reply_text("✅ Вы вышли из админ-панели.")
+        await start_command(update, context)
+
 async def admin_callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Роутер для callback'ов админ-панели"""
     if not update.callback_query:
@@ -1233,6 +1362,8 @@ async def admin_callback_router(update: Update, context: ContextTypes.DEFAULT_TY
         await admin_broadcast_callback(update, context)
     elif data == CALLBACK_ADMIN_CONFIRM_BROADCAST:
         await admin_confirm_broadcast_callback(update, context)
+    elif data == CALLBACK_ADMIN_EXIT:
+        await admin_exit_callback(update, context)
     elif data.startswith(CALLBACK_ADMIN_USERS_PAGE_PREFIX):
         try:
             page = int(data.replace(CALLBACK_ADMIN_USERS_PAGE_PREFIX, "", 1))

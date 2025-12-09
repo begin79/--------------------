@@ -103,38 +103,34 @@ async def check_schedule_changes_job(context: ContextTypes.DEFAULT_TYPE):
             api_type = API_TYPE_GROUP if default_mode == MODE_STUDENT else API_TYPE_TEACHER
             for date_str in dates_to_check:
                 cache_key = f"{user_id}_{default_query}_{date_str}"
-                # Используем таймаут для проверки изменений
-                # Обернуто в try-except, чтобы падение одного запроса не прерывало цикл для остальных пользователей
+                # ОПТИМИЗАЦИЯ: Используем один запрос вместо двух
+                # Получаем страницы (с кешем!) для хеширования и отображения
                 try:
-                    # Получаем структурированное расписание для сравнения
-                    try:
-                        new_schedule, err = await asyncio.wait_for(
-                            get_schedule_structured(date_str, default_query, api_type),
-                            timeout=10.0
-                        )
-                        if err or not new_schedule:
-                            continue
-                    except asyncio.TimeoutError:
-                        logger.debug(f"Таймаут при получении структурированного расписания для {user_id} ({date_str})")
-                        continue
-                    except Exception as e:
-                        logger.debug(f"Ошибка при получении структурированного расписания для {user_id} ({date_str}): {e}")
-                        continue
-
-                    # Получаем страницы для хеширования и отображения
                     try:
                         pages, err_pages = await asyncio.wait_for(
-                            get_schedule(date_str, default_query, api_type, use_cache=False),
-                            timeout=10.0
+                            get_schedule(date_str, default_query, api_type, use_cache=True),  # ОПТИМИЗАЦИЯ: use_cache=True
+                            timeout=8.0  # ОПТИМИЗАЦИЯ: уменьшен таймаут
                         )
                         if err_pages or not pages:
                             continue
                     except asyncio.TimeoutError:
-                        logger.debug(f"Таймаут при получении страниц расписания для {user_id} ({date_str})")
+                        logger.debug(f"Таймаут при получении расписания для {user_id} ({date_str})")
                         continue
                     except Exception as e:
-                        logger.debug(f"Ошибка при получении страниц расписания для {user_id} ({date_str}): {e}")
+                        logger.debug(f"Ошибка при получении расписания для {user_id} ({date_str}): {e}")
                         continue
+
+                    # ОПТИМИЗАЦИЯ: Получаем структурированное расписание только если нужно для сравнения
+                    # (это использует тот же кешированный HTML)
+                    try:
+                        new_schedule, err = await asyncio.wait_for(
+                            get_schedule_structured(date_str, default_query, api_type),
+                            timeout=5.0  # ОПТИМИЗАЦИЯ: короткий таймаут, т.к. данные уже в кеше
+                        )
+                    except asyncio.TimeoutError:
+                        new_schedule = None
+                    except Exception:
+                        new_schedule = None
 
                 except Exception as e:
                     # Общий catch для любых неожиданных ошибок

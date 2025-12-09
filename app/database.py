@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
 from datetime import datetime
+from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,11 @@ class UserDatabase:
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
         self._lock = threading.Lock()  # Блокировка для thread-safety
+        # ОПТИМИЗАЦИЯ: Кеш пользователей в памяти (5 минут TTL, до 1000 пользователей)
+        self._user_cache: TTLCache = TTLCache(maxsize=1000, ttl=300)
+        # ОПТИМИЗАЦИЯ: Батч-очередь для логов активности (записываем пачками)
+        self._activity_queue: List[Tuple[int, str, Optional[str]]] = []
+        self._activity_lock = threading.Lock()
         try:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
@@ -130,7 +136,11 @@ class UserDatabase:
             logger.error(f"Ошибка инициализации базы данных: {e}", exc_info=True)
 
     def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
-        """Получить данные пользователя"""
+        """Получить данные пользователя (с кешированием в памяти)"""
+        # ОПТИМИЗАЦИЯ: Сначала проверяем кеш
+        if user_id in self._user_cache:
+            return self._user_cache[user_id]
+
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
@@ -142,7 +152,10 @@ class UserDatabase:
                 ''', (user_id,))
                 row = cursor.fetchone()
                 if row:
-                    return dict(row)
+                    result = dict(row)
+                    # ОПТИМИЗАЦИЯ: Сохраняем в кеш
+                    self._user_cache[user_id] = result
+                    return result
                 return None
         except Exception as e:
             logger.error(f"Ошибка получения пользователя {user_id}: {e}", exc_info=True)
@@ -208,23 +221,42 @@ class UserDatabase:
                               notification_time or '21:00',
                               datetime.now().isoformat(), datetime.now().isoformat()))
                     logger.debug(f"Данные пользователя {user_id} сохранены")
+                    # ОПТИМИЗАЦИЯ: Инвалидируем кеш после сохранения
+                    self._user_cache.pop(user_id, None)
             except Exception as e:
                 logger.error(f"Ошибка сохранения пользователя {user_id}: {e}", exc_info=True)
 
     def log_activity(self, user_id: int, action: str, details: Optional[str] = None):
-        """Записать действие пользователя в лог"""
-        # Логирование может быть частым, используем блокировку
-        with self._lock:
-            try:
-                with self._get_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute('''
-                        INSERT INTO activity_log (user_id, action, details)
-                        VALUES (?, ?, ?)
-                    ''', (user_id, action, details))
-            except Exception as e:
-                # Не логируем ошибки записи активности как критичные - это не должно ломать работу бота
-                logger.debug(f"Ошибка записи активности пользователя {user_id}: {e}")
+        """
+        Записать действие пользователя в лог (батч-режим для производительности).
+        ОПТИМИЗАЦИЯ: Добавляем в очередь вместо немедленной записи.
+        """
+        with self._activity_lock:
+            self._activity_queue.append((user_id, action, details))
+            # Если накопилось 10+ записей, сбрасываем на диск
+            if len(self._activity_queue) >= 10:
+                self._flush_activity_log_internal()
+
+    def _flush_activity_log_internal(self):
+        """Внутренний метод: запись батча логов в БД (вызывается под _activity_lock)"""
+        if not self._activity_queue:
+            return
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.executemany('''
+                    INSERT INTO activity_log (user_id, action, details)
+                    VALUES (?, ?, ?)
+                ''', self._activity_queue)
+            self._activity_queue.clear()
+        except Exception as e:
+            # Не критично, просто логируем
+            logger.debug(f"Ошибка пакетной записи активности: {e}")
+
+    def flush_activity_log(self):
+        """Принудительно записать все накопленные логи в БД"""
+        with self._activity_lock:
+            self._flush_activity_log_internal()
 
     def get_all_users(self) -> list:
         """Получить список всех пользователей"""
@@ -318,8 +350,8 @@ class UserDatabase:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    SELECT created_at FROM feedback 
-                    WHERE user_id = ? 
+                    SELECT created_at FROM feedback
+                    WHERE user_id = ?
                     ORDER BY created_at DESC LIMIT 1
                 ''', (user_id,))
                 row = cursor.fetchone()
@@ -340,30 +372,30 @@ class UserDatabase:
             last_feedback = self.get_last_feedback_time(user_id)
             if not last_feedback:
                 return (True, None)
-            
+
             # Парсим время последнего отзыва
             if isinstance(last_feedback, str):
                 last_time = datetime.fromisoformat(last_feedback.replace('Z', '+00:00'))
             else:
                 last_time = last_feedback
-            
+
             # Убираем timezone для сравнения
             if last_time.tzinfo:
                 last_time = last_time.replace(tzinfo=None)
-            
+
             next_allowed = last_time + timedelta(hours=24)
             now = datetime.utcnow()
-            
+
             if now >= next_allowed:
                 return (True, None)
-            
+
             seconds_left = int((next_allowed - now).total_seconds())
             return (False, seconds_left)
         except Exception as e:
             logger.error(f"Ошибка проверки возможности оставить отзыв: {e}", exc_info=True)
             return (True, None)  # В случае ошибки разрешаем
 
-    def save_feedback(self, user_id: int, message: str, 
+    def save_feedback(self, user_id: int, message: str,
                       username: Optional[str] = None, first_name: Optional[str] = None) -> bool:
         """Сохранить отзыв пользователя"""
         with self._lock:
@@ -396,6 +428,51 @@ class UserDatabase:
         except Exception as e:
             logger.error(f"Ошибка получения отзывов: {e}", exc_info=True)
             return []
+
+    def get_last_feedback(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Получить последний отзыв пользователя"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT id, user_id, username, first_name, message, created_at
+                    FROM feedback
+                    WHERE user_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                ''', (user_id,))
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Ошибка получения последнего отзыва: {e}", exc_info=True)
+            return None
+
+    def get_last_activity(self, user_id: int, action_pattern: str = None) -> Optional[Dict[str, Any]]:
+        """Получить последнюю активность пользователя (поиск, запрос расписания и т.д.)"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                if action_pattern:
+                    cursor.execute('''
+                        SELECT user_id, action, details, timestamp
+                        FROM activity_log
+                        WHERE user_id = ? AND action LIKE ?
+                        ORDER BY timestamp DESC
+                        LIMIT 1
+                    ''', (user_id, f"%{action_pattern}%"))
+                else:
+                    cursor.execute('''
+                        SELECT user_id, action, details, timestamp
+                        FROM activity_log
+                        WHERE user_id = ?
+                        ORDER BY timestamp DESC
+                        LIMIT 1
+                    ''', (user_id,))
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Ошибка получения последней активности: {e}", exc_info=True)
+            return None
 
 # Глобальный экземпляр базы данных
 db = UserDatabase()

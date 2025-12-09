@@ -34,6 +34,10 @@ from .utils import escape_html
 from .schedule import get_schedule, search_entities
 from .database import db
 from .admin.utils import is_bot_enabled, get_maintenance_message
+from .state_manager import (
+    clear_temporary_states, clear_user_busy_state, set_user_busy,
+    validate_callback_data, safe_get_user_data, is_user_busy
+)
 from .admin.handlers import (
     CALLBACK_ADMIN_MESSAGE_USER_PREFIX,
     CALLBACK_ADMIN_USER_DETAILS_PREFIX,
@@ -106,16 +110,11 @@ async def safe_edit_message_text(callback_query, text: str, reply_markup=None, p
         logger.debug(f"Неожиданная ошибка при редактировании сообщения: {e}")
         return False
 
+# Функции check_user_busy и set_user_busy перенесены в state_manager
+# Оставляем для обратной совместимости
 def check_user_busy(user_data: dict) -> bool:
-    """Проверяет, занят ли пользователь обработкой запроса"""
-    return user_data.get(CTX_IS_BUSY, False)
-
-def set_user_busy(user_data: dict, busy: bool = True):
-    """Устанавливает флаг занятости пользователя"""
-    if busy:
-        user_data[CTX_IS_BUSY] = True
-    else:
-        user_data.pop(CTX_IS_BUSY, None)
+    """Проверяет, занят ли пользователь обработкой запроса (deprecated, используйте is_user_busy)"""
+    return is_user_busy(user_data)
 
 @contextmanager
 def user_busy_context(user_data: dict):
@@ -512,10 +511,10 @@ def detect_query_type(text: str) -> Optional[Tuple[str, str]]:
     return None
 
 def get_default_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Создает стандартную клавиатуру с кнопками 'Старт' и 'Меню'"""
+    """Создает стандартную клавиатуру с кнопками 'Старт' и 'Настройки'"""
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton("Старт"), KeyboardButton("Меню")]
+            [KeyboardButton("Старт"), KeyboardButton("Настройки")]
         ],
         resize_keyboard=True,
         one_time_keyboard=False
@@ -562,12 +561,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_name = update.effective_user.last_name
     logger.info(f"👤 [{user_id}] @{username} ({first_name}) → Команда /start")
 
-    # Проверяем, новый ли это пользователь (первый запуск) - проверяем ДО сохранения
-    user_db_before_save = db.get_user(user_id)
-    is_first_time = user_db_before_save is None
+    # ОПТИМИЗАЦИЯ: Один запрос к БД вместо двух (get_user + load_user_data_from_db)
+    user_db = db.get_user(user_id)
+    is_first_time = user_db is None
 
-    # Загружаем данные из БД
-    load_user_data_from_db(user_id, context.user_data)
+    # Загружаем данные напрямую из полученного результата (без повторного запроса)
+    if user_db:
+        if user_db.get('default_query'):
+            context.user_data[CTX_DEFAULT_QUERY] = user_db['default_query']
+        if user_db.get('default_mode'):
+            context.user_data[CTX_DEFAULT_MODE] = user_db['default_mode']
+        if user_db.get('daily_notifications') is not None:
+            context.user_data[CTX_DAILY_NOTIFICATIONS] = bool(user_db['daily_notifications'])
+        if user_db.get('notification_time'):
+            context.user_data[CTX_NOTIFICATION_TIME] = user_db['notification_time']
 
     # Очищаем временные ключи
     temp_keys = [CTX_MODE, CTX_SELECTED_DATE, CTX_AWAITING_MANUAL_DATE, CTX_LAST_QUERY,
@@ -751,17 +758,14 @@ async def settings_menu_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     user_data = context.user_data
 
-    # Перед загрузкой из БД очищаем устаревшие значения
-    for key in [CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE, CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME]:
-        user_data.pop(key, None)
-
-    # Загружаем актуальные данные из БД
-    load_user_data_from_db(user_id, user_data)
+    # ОПТИМИЗАЦИЯ: Загружаем из БД только если данные отсутствуют в контексте
+    if not user_data.get(CTX_DEFAULT_QUERY) and not user_data.get(CTX_DEFAULT_MODE):
+        load_user_data_from_db(user_id, user_data)
 
     query = user_data.get(CTX_DEFAULT_QUERY, "Не задано")
     is_daily = user_data.get(CTX_DAILY_NOTIFICATIONS, False)
     notification_time = user_data.get(CTX_NOTIFICATION_TIME, DEFAULT_NOTIFICATION_TIME)
-    logger.info(f"📊 [{user_id}] Текущие настройки: группа/преподаватель='{query}', уведомления={'вкл' if is_daily else 'выкл'}, время={notification_time}")
+    logger.debug(f"📊 [{user_id}] Настройки: группа='{query}', уведомления={'вкл' if is_daily else 'выкл'}")
     text = f"<b>⚙️ Настройки</b>\n\nТекущая группа/преподаватель:\n<code>{escape_html(query)}</code>\n\nВремя уведомлений: <code>{notification_time}</code>"
     kbd = InlineKeyboardMarkup([
         [InlineKeyboardButton("Установить/изменить группу", callback_data="set_default_mode_student")],
@@ -788,6 +792,9 @@ async def settings_menu_callback(update: Update, context: ContextTypes.DEFAULT_T
             logger.error(f"Не удалось обновить меню настроек: {e}")
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обработчик текстовых сообщений с улучшенной обработкой ошибок и состояний
+    """
     if not update.effective_user or not update.message:
         logger.error("handle_text_message вызван без effective_user или message")
         return
@@ -795,121 +802,183 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_data = context.user_data
     user_id = update.effective_user.id
 
-    # Проверяем статус бота (кроме админов)
-    from .admin.utils import is_admin
-    if not is_admin(user_id) and not is_bot_enabled():
-        maintenance_msg = get_maintenance_message()
-        await update.message.reply_text(maintenance_msg)
-        return
+    try:
+        # Проверяем статус бота (кроме админов) - кешируем результат
+        from .admin.utils import is_admin
+        is_admin_user = is_admin(user_id)
+        if not is_admin_user and not is_bot_enabled():
+            maintenance_msg = get_maintenance_message()
+            await update.message.reply_text(maintenance_msg)
+            return
 
-    username = update.effective_user.username or "без username"
-    first_name = update.effective_user.first_name or "без имени"
-    text = update.message.text.strip()
+        username = update.effective_user.username or "без username"
+        first_name = update.effective_user.first_name or "без имени"
+        text = update.message.text.strip() if update.message.text else ""
 
-    logger.info(f"💬 [{user_id}] @{username} ({first_name}) → Текстовое сообщение: '{text[:50]}{'...' if len(text) > 50 else ''}'")
+        logger.info(f"💬 [{user_id}] @{username} ({first_name}) → Текстовое сообщение: '{text[:50]}{'...' if len(text) > 50 else ''}'")
 
-    pending_admin_id = user_data.get("pending_admin_reply")
-    if not pending_admin_id:
-        reply_states = _get_admin_reply_states(context)
-        state = reply_states.get(user_id)
-        if state and state.get("admin_id"):
-            pending_admin_id = state["admin_id"]
-            user_data["pending_admin_reply"] = pending_admin_id
-    if pending_admin_id:
-        lowered = text.lower()
-        if lowered in {"отмена", "cancel", "/cancel"}:
-            user_data.pop("pending_admin_reply", None)
+        # Обработка ответа администратору
+        pending_admin_id = safe_get_user_data(user_data, "pending_admin_reply")
+        if not pending_admin_id:
             reply_states = _get_admin_reply_states(context)
-            reply_states.pop(user_id, None)
-            await update.message.reply_text("✅ Ответ администратору отменён.")
-        else:
-            await process_user_reply_to_admin_message(update, context, pending_admin_id, text)
-        return
+            state = reply_states.get(user_id)
+            if state and state.get("admin_id"):
+                pending_admin_id = state["admin_id"]
+                user_data["pending_admin_reply"] = pending_admin_id
 
-    # Проверяем, ожидается ли отзыв
-    if await process_feedback_message(update, context, text):
-        return
+        if pending_admin_id:
+            lowered = text.lower()
+            if lowered in {"отмена", "cancel", "/cancel"}:
+                user_data.pop("pending_admin_reply", None)
+                reply_states = _get_admin_reply_states(context)
+                reply_states.pop(user_id, None)
+                await update.message.reply_text("✅ Ответ администратору отменён.")
+            else:
+                try:
+                    await process_user_reply_to_admin_message(update, context, pending_admin_id, text)
+                except Exception as e:
+                    logger.error(f"Ошибка при обработке ответа администратору: {e}", exc_info=True)
+                    await update.message.reply_text("❌ Произошла ошибка при отправке ответа. Попробуйте позже.")
+                    clear_temporary_states(user_data)
+            return
 
-    # Проверяем, не занят ли пользователь
-    if check_user_busy(user_data):
-        await update.message.reply_text("⏳ Пожалуйста, подождите, я обрабатываю предыдущий запрос...")
-        return
+        # Проверяем, ожидается ли отзыв
+        try:
+            if await process_feedback_message(update, context, text):
+                return
+        except Exception as e:
+            logger.error(f"Ошибка при обработке отзыва: {e}", exc_info=True)
+            clear_temporary_states(user_data)
 
-    # Команда /start или "Старт" обрабатывается CommandHandler, но на случай если пришла как текст
-    if text == "/start" or text.startswith("/start") or text.strip().lower() == "старт":
-        await start_command(update, context)
-        return
+        # Проверяем, не занят ли пользователь
+        if is_user_busy(user_data):
+            await update.message.reply_text("⏳ Пожалуйста, подождите, я обрабатываю предыдущий запрос...")
+            return
 
-    # Обработка кнопки "Меню"
-    if text.strip().lower() == "меню":
-        await start_command(update, context)
-        return
+        # Команда /start или "Старт"
+        if text == "/start" or text.startswith("/start") or text.strip().lower() == "старт":
+            try:
+                await start_command(update, context)
+            except Exception as e:
+                logger.error(f"Ошибка в start_command: {e}", exc_info=True)
+                await update.message.reply_text("❌ Произошла ошибка. Попробуйте команду /start ещё раз.")
+                clear_temporary_states(user_data)
+            return
 
-    # Загружаем данные из БД при первом обращении
-    if not user_data.get(CTX_DEFAULT_QUERY):
-        load_user_data_from_db(user_id, user_data)
+        # Обработка кнопки "Настройки"
+        if text.strip().lower() == "настройки":
+            try:
+                await settings_menu_callback(update, context)
+            except Exception as e:
+                logger.error(f"Ошибка в settings_menu_callback: {e}", exc_info=True)
+                await update.message.reply_text("❌ Произошла ошибка при открытии настроек.")
+                clear_temporary_states(user_data)
+            return
 
-    # Умный холодный старт: если режим не выбран, пытаемся определить по тексту
-    # ВАЖНО: для новых пользователей без установленной группы/преподавателя не устанавливаем default_query автоматически
-    if not user_data.get(CTX_MODE) and not user_data.get(CTX_AWAITING_DEFAULT_QUERY) and not user_data.get(CTX_AWAITING_MANUAL_DATE):
-        # Проверяем, есть ли у пользователя установленная группа/преподаватель
-        has_default_query = bool(user_data.get(CTX_DEFAULT_QUERY))
+        # Обработка кнопки "Меню" (обратная совместимость)
+        if text.strip().lower() == "меню":
+            try:
+                await start_command(update, context)
+            except Exception as e:
+                logger.error(f"Ошибка в start_command (меню): {e}", exc_info=True)
+                await update.message.reply_text("❌ Произошла ошибка. Попробуйте команду /start ещё раз.")
+                clear_temporary_states(user_data)
+            return
 
-        detected = detect_query_type(text)
-        if detected:
-            mode, query_text = detected
-            mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
-            user_data[CTX_MODE] = mode
+        # Загружаем данные из БД при первом обращении
+        if not safe_get_user_data(user_data, CTX_DEFAULT_QUERY):
+            try:
+                load_user_data_from_db(user_id, user_data)
+            except Exception as e:
+                logger.error(f"Ошибка при загрузке данных пользователя: {e}", exc_info=True)
+                # Продолжаем работу, даже если не удалось загрузить данные
 
-            # Если у пользователя нет установленной группы/преподавателя, предлагаем сначала выбрать режим через /start
-            if not has_default_query:
+        # Умный холодный старт: если режим не выбран, пытаемся определить по тексту
+        # ВАЖНО: для новых пользователей без установленной группы/преподавателя не устанавливаем default_query автоматически
+        if not safe_get_user_data(user_data, CTX_MODE) and not safe_get_user_data(user_data, CTX_AWAITING_DEFAULT_QUERY) and not safe_get_user_data(user_data, CTX_AWAITING_MANUAL_DATE):
+            # Проверяем, есть ли у пользователя установленная группа/преподаватель
+            has_default_query = bool(user_data.get(CTX_DEFAULT_QUERY))
+
+            detected = detect_query_type(text)
+            if detected:
+                mode, query_text = detected
+                mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
+                user_data[CTX_MODE] = mode
+
+                # Если у пользователя нет установленной группы/преподавателя, предлагаем сначала выбрать режим через /start
+                if not has_default_query:
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🎓 Я студент", callback_data=CALLBACK_DATA_MODE_STUDENT)],
+                        [InlineKeyboardButton("🧑‍🏫 Я преподаватель", callback_data=CALLBACK_DATA_MODE_TEACHER)],
+                        [InlineKeyboardButton("❓ Не знаю", callback_data=CallbackData.HELP_COMMAND_INLINE.value)]
+                    ])
+                    await update.message.reply_text(
+                        f"🔍 Я вижу, что вы ищете {mode_text}: <b>{escape_html(query_text)}</b>\n\n"
+                        f"Для начала работы с ботом выберите, кто вы:",
+                        reply_markup=keyboard,
+                        parse_mode=ParseMode.HTML
+                    )
+                    return
+                else:
+                    # Для существующих пользователей предлагаем подтвердить выбор
+                    keyboard = InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton("✅ Да, это правильный режим", callback_data=f"confirm_mode_{mode}_{hashlib.md5(query_text.encode()).hexdigest()[:8]}"),
+                            InlineKeyboardButton("❌ Нет, выбрать другой", callback_data=CALLBACK_DATA_BACK_TO_START)
+                        ]
+                    ])
+                    user_data[f"pending_query_{mode}"] = query_text
+                    await update.message.reply_text(
+                        f"🔍 Я определил, что вы ищете {mode_text}: <b>{escape_html(query_text)}</b>\n\n"
+                        f"Правильно?",
+                        reply_markup=keyboard,
+                        parse_mode=ParseMode.HTML
+                    )
+                    return
+            else:
+                # Не удалось определить, предлагаем выбрать режим
                 keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("🎓 Я студент", callback_data=CALLBACK_DATA_MODE_STUDENT)],
                     [InlineKeyboardButton("🧑‍🏫 Я преподаватель", callback_data=CALLBACK_DATA_MODE_TEACHER)],
                     [InlineKeyboardButton("❓ Не знаю", callback_data=CallbackData.HELP_COMMAND_INLINE.value)]
                 ])
                 await update.message.reply_text(
-                    f"🔍 Я вижу, что вы ищете {mode_text}: <b>{escape_html(query_text)}</b>\n\n"
-                    f"Для начала работы с ботом выберите, кто вы:",
-                    reply_markup=keyboard,
-                    parse_mode=ParseMode.HTML
+                    "🤔 Я не могу определить, что вы ищете. Пожалуйста, выберите режим:",
+                    reply_markup=keyboard
                 )
                 return
-            else:
-                # Для существующих пользователей предлагаем подтвердить выбор
-                keyboard = InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton("✅ Да, это правильный режим", callback_data=f"confirm_mode_{mode}_{hashlib.md5(query_text.encode()).hexdigest()[:8]}"),
-                        InlineKeyboardButton("❌ Нет, выбрать другой", callback_data=CALLBACK_DATA_BACK_TO_START)
-                    ]
-                ])
-                user_data[f"pending_query_{mode}"] = query_text
-                await update.message.reply_text(
-                    f"🔍 Я определил, что вы ищете {mode_text}: <b>{escape_html(query_text)}</b>\n\n"
-                    f"Правильно?",
-                    reply_markup=keyboard,
-                    parse_mode=ParseMode.HTML
-                )
-                return
-        else:
-            # Не удалось определить, предлагаем выбрать режим
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎓 Я студент", callback_data=CALLBACK_DATA_MODE_STUDENT)],
-                [InlineKeyboardButton("🧑‍🏫 Я преподаватель", callback_data=CALLBACK_DATA_MODE_TEACHER)],
-                [InlineKeyboardButton("❓ Не знаю", callback_data=CallbackData.HELP_COMMAND_INLINE.value)]
-            ])
-            await update.message.reply_text(
-                "🤔 Я не могу определить, что вы ищете. Пожалуйста, выберите режим:",
-                reply_markup=keyboard
-            )
-            return
 
-    if user_data.get(CTX_AWAITING_DEFAULT_QUERY):
-        await handle_default_query_input(update, context, text)
-    elif user_data.get(CTX_AWAITING_MANUAL_DATE):
-        await handle_manual_date_input(update, context, text)
-    else:
-        await handle_schedule_search(update, context, text)
+        # Обработка различных состояний ожидания ввода
+        if safe_get_user_data(user_data, CTX_AWAITING_DEFAULT_QUERY):
+            try:
+                await handle_default_query_input(update, context, text)
+            except Exception as e:
+                logger.error(f"Ошибка в handle_default_query_input: {e}", exc_info=True)
+                await update.message.reply_text("❌ Произошла ошибка при обработке запроса.")
+                clear_temporary_states(user_data)
+        elif safe_get_user_data(user_data, CTX_AWAITING_MANUAL_DATE):
+            try:
+                await handle_manual_date_input(update, context, text)
+            except Exception as e:
+                logger.error(f"Ошибка в handle_manual_date_input: {e}", exc_info=True)
+                await update.message.reply_text("❌ Произошла ошибка при обработке даты.")
+                clear_temporary_states(user_data)
+        else:
+            try:
+                await handle_schedule_search(update, context, text)
+            except Exception as e:
+                logger.error(f"Ошибка в handle_schedule_search: {e}", exc_info=True)
+                await update.message.reply_text("❌ Произошла ошибка при поиске расписания.")
+                clear_temporary_states(user_data)
+
+    except Exception as e:
+        # Общая обработка ошибок для всей функции
+        logger.error(f"Критическая ошибка в handle_text_message: {e}", exc_info=True)
+        try:
+            await update.message.reply_text("❌ Произошла критическая ошибка. Попробуйте позже или используйте /start.")
+        except Exception:
+            pass
+        clear_temporary_states(user_data)
 
 async def handle_default_query_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     if not update.effective_user:
@@ -1714,7 +1783,7 @@ async def setup_export_process(
         return None, None, None, 0, False
 
     # 3. Проверка блокировки
-    if check_user_busy(user_data):
+    if is_user_busy(user_data):
         await safe_answer_callback_query(update.callback_query, "⏳ Пожалуйста, подождите...")
         return None, None, None, 0, False
 
@@ -1961,7 +2030,7 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await safe_answer_callback_query(update.callback_query, "Ошибка: данные не найдены", show_alert=True)
         return
 
-    if check_user_busy(user_data):
+    if is_user_busy(user_data):
         await safe_answer_callback_query(update.callback_query, "⏳ Уже генерирую другой экспорт, подождите...")
         return
 
@@ -2143,7 +2212,7 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
         await safe_edit_message_text(update.callback_query, text, reply_markup=kbd, parse_mode=ParseMode.HTML)
         return
 
-    if check_user_busy(user_data):
+    if is_user_busy(user_data):
         await safe_answer_callback_query(update.callback_query, "⏳ Уже генерирую другой экспорт, подождите...")
         return
 
@@ -2406,41 +2475,41 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     """Обработчик кнопки 'Оставить отзыв'"""
     user_id = update.effective_user.id
     username = update.effective_user.username or "без username"
-    
+
     # Проверяем, можно ли оставить отзыв (1 раз в 24 часа)
     can_feedback, seconds_left = db.can_leave_feedback(user_id)
-    
+
     if not can_feedback:
         # Вычисляем, сколько осталось ждать
         hours_left = seconds_left // 3600
         minutes_left = (seconds_left % 3600) // 60
-        
+
         if hours_left > 0:
             time_str = f"{hours_left} ч. {minutes_left} мин."
         else:
             time_str = f"{minutes_left} мин."
-        
+
         await safe_answer_callback_query(
             update.callback_query,
             f"⏳ Вы уже оставляли отзыв. Следующий можно оставить через {time_str}",
             show_alert=True
         )
         return
-    
+
     # Устанавливаем флаг ожидания отзыва
     context.user_data["awaiting_feedback"] = True
-    
+
     text = (
         "💬 <b>Оставить отзыв</b>\n\n"
         "Напишите ваш отзыв, пожелание или предложение по улучшению бота.\n\n"
         "📝 Просто отправьте сообщение в этот чат.\n\n"
         "<i>Отзыв можно оставлять 1 раз в сутки.</i>"
     )
-    
+
     kbd = InlineKeyboardMarkup([
         [InlineKeyboardButton("⬅️ Отмена", callback_data=CALLBACK_DATA_SETTINGS_MENU)]
     ])
-    
+
     await safe_edit_message_text(update.callback_query, text, reply_markup=kbd, parse_mode=ParseMode.HTML)
     await safe_answer_callback_query(update.callback_query)
     logger.info(f"💬 [{user_id}] @{username} → Открыл форму отзыва")
@@ -2451,26 +2520,26 @@ async def process_feedback_message(update: Update, context: ContextTypes.DEFAULT
     Возвращает True если сообщение было обработано как отзыв.
     """
     user_data = context.user_data
-    
+
     if not user_data.get("awaiting_feedback"):
         return False
-    
+
     user_id = update.effective_user.id
     username = update.effective_user.username
     first_name = update.effective_user.first_name
-    
+
     # Сбрасываем флаг ожидания
     user_data.pop("awaiting_feedback", None)
-    
+
     # Проверяем ещё раз лимит (на случай спама)
     can_feedback, _ = db.can_leave_feedback(user_id)
     if not can_feedback:
         await update.message.reply_text("⏳ Вы уже оставляли отзыв сегодня. Попробуйте завтра!")
         return True
-    
+
     # Сохраняем отзыв
     success = db.save_feedback(user_id, text, username, first_name)
-    
+
     if success:
         await update.message.reply_text(
             "✅ Спасибо за ваш отзыв!\n\n"
@@ -2480,7 +2549,7 @@ async def process_feedback_message(update: Update, context: ContextTypes.DEFAULT
             ])
         )
         logger.info(f"✅ [{user_id}] @{username} → Оставил отзыв: {text[:50]}...")
-        
+
         # Уведомляем администратора о новом отзыве
         try:
             from .admin.utils import get_root_admin_id
@@ -2497,7 +2566,7 @@ async def process_feedback_message(update: Update, context: ContextTypes.DEFAULT
             logger.warning(f"Не удалось уведомить админа о отзыве: {e}")
     else:
         await update.message.reply_text("❌ Не удалось сохранить отзыв. Попробуйте позже.")
-    
+
     return True
 
 async def handle_back_to_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
@@ -2534,6 +2603,9 @@ async def handle_back_to_schedule(update: Update, context: ContextTypes.DEFAULT_
         await safe_answer_callback_query(update.callback_query, "Не удалось восстановить расписание", show_alert=True)
 
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Оптимизированный роутер для callback queries с улучшенной обработкой ошибок
+    """
     if not update.callback_query:
         logger.error("callback_router вызван без callback_query")
         return
@@ -2547,46 +2619,66 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = update.callback_query.data
     user_data = context.user_data
 
-    # Проверяем, не админский ли это callback
-    from .admin.handlers import admin_callback_router
+    # Валидация callback data
+    if not validate_callback_data(data):
+        logger.warning(f"⚠️ [{user_id}] Некорректные данные callback: {data[:50]}")
+        await safe_answer_callback_query(update.callback_query, "Ошибка: некорректные данные", show_alert=True)
+        return
 
+    # Проверяем, не админский ли это callback (ранняя проверка для оптимизации)
+    from .admin.handlers import admin_callback_router
+    from .admin.utils import is_admin
+
+    # Обработка админских callback'ов
+    if data.startswith("admin_"):
+        try:
+            await admin_callback_router(update, context)
+        except Exception as e:
+            logger.error(f"Ошибка в admin_callback_router: {e}", exc_info=True)
+            await safe_answer_callback_query(update.callback_query, "Ошибка обработки команды", show_alert=True)
+            clear_temporary_states(user_data)
+        return
+
+    # Обработка ответов пользователя администратору
     if data.startswith(CALLBACK_USER_REPLY_ADMIN_PREFIX):
         admin_id_str = data.replace(CALLBACK_USER_REPLY_ADMIN_PREFIX, "", 1)
         try:
             admin_id = int(admin_id_str)
-        except ValueError:
+            await start_user_reply_to_admin(update, context, admin_id)
+        except (ValueError, TypeError):
             await safe_answer_callback_query(update.callback_query, "Администратор не найден", show_alert=True)
-            return
-        await start_user_reply_to_admin(update, context, admin_id)
+        except Exception as e:
+            logger.error(f"Ошибка при обработке ответа администратору: {e}", exc_info=True)
+            await safe_answer_callback_query(update.callback_query, "Ошибка обработки", show_alert=True)
         return
+
     if data.startswith(CALLBACK_USER_DISMISS_ADMIN_PREFIX):
         admin_id_str = data.replace(CALLBACK_USER_DISMISS_ADMIN_PREFIX, "", 1)
         try:
             admin_id = int(admin_id_str)
-        except ValueError:
+            await handle_user_dismiss_admin_message(update, context, admin_id)
+        except (ValueError, TypeError):
             await safe_answer_callback_query(update.callback_query, "Действие недоступно", show_alert=True)
-            return
-        await handle_user_dismiss_admin_message(update, context, admin_id)
-        return
-    if data.startswith("admin_"):
-        await admin_callback_router(update, context)
+        except Exception as e:
+            logger.error(f"Ошибка при закрытии уведомления: {e}", exc_info=True)
+            await safe_answer_callback_query(update.callback_query, "Ошибка обработки", show_alert=True)
         return
 
-    # Проверяем статус бота (кроме админов)
-    from .admin.utils import is_admin
-    if not is_admin(user_id) and not is_bot_enabled():
+    # Проверяем статус бота (кроме админов) - кешируем результат
+    is_admin_user = is_admin(user_id)
+    if not is_admin_user and not is_bot_enabled():
         maintenance_msg = get_maintenance_message()
-        await update.callback_query.answer(maintenance_msg, show_alert=True)
+        await safe_answer_callback_query(update.callback_query, maintenance_msg, show_alert=True)
         return
 
     logger.info(f"🔘 [{user_id}] @{username} → Callback: '{data}'")
 
-    # Проверяем блокировку
-    if check_user_busy(user_data) and not data.startswith("cancel"):
+    # Проверяем блокировку (оптимизировано)
+    if safe_get_user_data(user_data, CTX_IS_BUSY, False) and not data.startswith("cancel"):
         await safe_answer_callback_query(update.callback_query, "⏳ Пожалуйста, подождите...")
         return
 
-    # Отвечаем на callback сразу
+    # Отвечаем на callback сразу (оптимизация UX)
     await safe_answer_callback_query(update.callback_query)
 
     # Словарь для точных совпадений (Direct Match)
@@ -2608,13 +2700,30 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "back_to_schedule_from_export": handle_back_to_schedule,
     }
 
+    # Обработка точных совпадений
     if data in HANDLERS:
         handler = HANDLERS[data]
         try:
-            await handler(update, context, data)
-        except TypeError:
-            # Если функция принимает только 2 аргумента
-            await handler(update, context)
+            # Устанавливаем флаг занятости для длительных операций
+            if data not in [CALLBACK_DATA_CANCEL_INPUT, CALLBACK_DATA_BACK_TO_START]:
+                set_user_busy(user_data, True)
+
+            try:
+                await handler(update, context, data)
+            except TypeError:
+                # Если функция принимает только 2 аргумента
+                await handler(update, context)
+        except Exception as e:
+            logger.error(f"Ошибка в обработчике callback '{data}': {e}", exc_info=True)
+            await safe_answer_callback_query(
+                update.callback_query,
+                "Произошла ошибка при обработке команды",
+                show_alert=True
+            )
+            clear_temporary_states(user_data)
+        finally:
+            # Всегда очищаем флаг занятости
+            clear_user_busy_state(user_data)
         return
 
     # Список префиксов для динамических данных (порядок важен, если префиксы пересекаются)
@@ -2639,14 +2748,31 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX, lambda u, c, d: schedule_navigation_callback(u, c)),
     ]
 
+    # Обработка префиксов
     for prefix, handler in PREFIXES:
         if data.startswith(prefix):
             try:
-                await handler(update, context, data)
-            except TypeError:
-                # Если функция принимает только 2 аргумента
-                await handler(update, context)
+                # Устанавливаем флаг занятости
+                set_user_busy(user_data, True)
+
+                try:
+                    await handler(update, context, data)
+                except TypeError:
+                    # Если функция принимает только 2 аргумента
+                    await handler(update, context)
+            except Exception as e:
+                logger.error(f"Ошибка в обработчике префикса '{prefix}': {e}", exc_info=True)
+                await safe_answer_callback_query(
+                    update.callback_query,
+                    "Произошла ошибка при обработке команды",
+                    show_alert=True
+                )
+                clear_temporary_states(user_data)
+            finally:
+                # Всегда очищаем флаг занятости
+                clear_user_busy_state(user_data)
             return
 
+    # Неизвестный callback
     logger.warning(f"⚠️ [{user_id}] Неизвестный callback: {data}")
     await safe_answer_callback_query(update.callback_query, "Неизвестная команда", show_alert=True)
