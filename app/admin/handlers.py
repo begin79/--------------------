@@ -49,8 +49,13 @@ CALLBACK_ADMIN_LIST_ADMINS = "admin_list_admins"
 CALLBACK_ADMIN_CONFIRM_TOGGLE = "admin_confirm_toggle"
 CALLBACK_ADMIN_CANCEL_TOGGLE = "admin_cancel_toggle"
 CALLBACK_ADMIN_EXIT = "admin_exit"
+CALLBACK_ADMIN_FEEDBACK = "admin_feedback"
+CALLBACK_ADMIN_FEEDBACK_LIST = "admin_feedback_list"
+CALLBACK_ADMIN_FEEDBACK_PAGE_PREFIX = "admin_feedback_page_"
+CALLBACK_ADMIN_FEEDBACK_DETAILS_PREFIX = "admin_feedback_details_"
 
 USERS_PAGE_SIZE = 5  # Уменьшено для удобства навигации
+FEEDBACK_PAGE_SIZE = 10  # Количество отзывов на странице
 
 def format_timestamp(value: Optional[str]) -> str:
     """Приводит ISO-дату к читаемому виду"""
@@ -146,10 +151,17 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"Выберите действие:"
     )
 
+    # Получаем количество непрочитанных отзывов
+    from app.database import db
+    all_feedback = db.get_all_feedback(limit=1000)
+    unread_count = sum(1 for f in all_feedback if not f.get('is_read', False))
+    feedback_button_text = f"💬 Отзывы" + (f" ({unread_count})" if unread_count > 0 else "")
+
     kbd = InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Статистика", callback_data=CALLBACK_ADMIN_STATS)],
         [InlineKeyboardButton(f"{status_emoji} Управление ботом", callback_data=CALLBACK_ADMIN_BOT_STATUS)],
         [InlineKeyboardButton("👥 Управление пользователями", callback_data=CALLBACK_ADMIN_USERS)],
+        [InlineKeyboardButton(feedback_button_text, callback_data=CALLBACK_ADMIN_FEEDBACK)],
         [InlineKeyboardButton("💬 Массовая рассылка", callback_data=CALLBACK_ADMIN_BROADCAST)],
         [InlineKeyboardButton("🗑️ Очистить кеш", callback_data=CALLBACK_ADMIN_CACHE)],
         [InlineKeyboardButton("👨‍💼 Управление админами", callback_data=CALLBACK_ADMIN_LIST_ADMINS)],
@@ -1290,6 +1302,179 @@ async def admin_confirm_broadcast_callback(update: Update, context: ContextTypes
     await update.effective_chat.send_message(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
     logger.info(f"Админ {update.effective_user.id} выполнил рассылку: {success}/{total} успешно")
 
+async def admin_feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меню отзывов"""
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        return
+
+    all_feedback = db.get_all_feedback(limit=1000)
+    total_count = len(all_feedback)
+    unread_count = sum(1 for f in all_feedback if not f.get('is_read', False))
+
+    text = (
+        f"💬 <b>Отзывы пользователей</b>\n\n"
+        f"📊 <b>Статистика:</b>\n"
+        f"   • Всего отзывов: {total_count}\n"
+        f"   • Непрочитанных: {unread_count}\n\n"
+        f"Выберите действие:"
+    )
+
+    kbd = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Список отзывов", callback_data=CALLBACK_ADMIN_FEEDBACK_LIST)],
+        [InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_ADMIN_MENU)],
+    ])
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+        await update.callback_query.answer()
+
+async def admin_feedback_list_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
+    """Список отзывов с пагинацией"""
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        return
+
+    all_feedback = db.get_all_feedback(limit=1000)
+    total_count = len(all_feedback)
+    
+    # Сортируем по дате (новые сначала)
+    all_feedback.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+    
+    # Пагинация
+    start_idx = page * FEEDBACK_PAGE_SIZE
+    end_idx = start_idx + FEEDBACK_PAGE_SIZE
+    page_feedback = all_feedback[start_idx:end_idx]
+    total_pages = (total_count + FEEDBACK_PAGE_SIZE - 1) // FEEDBACK_PAGE_SIZE
+
+    if not page_feedback:
+        text = "📋 <b>Отзывы</b>\n\nНет отзывов."
+        kbd = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_ADMIN_FEEDBACK)],
+        ])
+    else:
+        text_lines = [f"📋 <b>Отзывы</b> (стр. {page + 1}/{total_pages if total_pages > 0 else 1})\n"]
+        
+        for idx, feedback in enumerate(page_feedback, start=start_idx + 1):
+            feedback_id = feedback.get('id')
+            user_id = feedback.get('user_id')
+            username = feedback.get('username') or 'без username'
+            first_name = feedback.get('first_name') or 'Без имени'
+            message = feedback.get('message', '')
+            created_at = feedback.get('created_at', '')
+            
+            # Форматируем дату
+            try:
+                if isinstance(created_at, str):
+                    dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                else:
+                    dt = created_at
+                date_str = dt.strftime('%d.%m.%Y %H:%M')
+            except:
+                date_str = str(created_at)[:16]
+            
+            # Обрезаем сообщение для списка
+            message_preview = message[:60] + "..." if len(message) > 60 else message
+            is_read = feedback.get('is_read', False)
+            read_marker = "✅" if is_read else "🆕"
+            
+            text_lines.append(
+                f"{read_marker} <b>#{idx}</b> | {date_str}\n"
+                f"👤 {escape_html(first_name)} (@{escape_html(username)})\n"
+                f"💬 {escape_html(message_preview)}\n"
+            )
+
+        text = "\n".join(text_lines)
+
+        # Кнопки навигации
+        kbd_rows = []
+        for feedback in page_feedback:
+            feedback_id = feedback.get('id')
+            user_id = feedback.get('user_id')
+            username = feedback.get('username') or 'без username'
+            first_name = feedback.get('first_name') or 'Без имени'
+            message_preview = feedback.get('message', '')[:30] + "..." if len(feedback.get('message', '')) > 30 else feedback.get('message', '')
+            is_read = feedback.get('is_read', False)
+            read_marker = "✅" if is_read else "🆕"
+            
+            kbd_rows.append([
+                InlineKeyboardButton(
+                    f"{read_marker} {escape_html(first_name)} - {escape_html(message_preview)}",
+                    callback_data=f"{CALLBACK_ADMIN_FEEDBACK_DETAILS_PREFIX}{feedback_id}"
+                )
+            ])
+
+        # Навигация по страницам
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("⬅️ Предыдущая", callback_data=f"{CALLBACK_ADMIN_FEEDBACK_PAGE_PREFIX}{page - 1}"))
+        if end_idx < total_count:
+            nav_buttons.append(InlineKeyboardButton("Следующая ➡️", callback_data=f"{CALLBACK_ADMIN_FEEDBACK_PAGE_PREFIX}{page + 1}"))
+        if nav_buttons:
+            kbd_rows.append(nav_buttons)
+
+        kbd_rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_ADMIN_FEEDBACK)])
+        kbd = InlineKeyboardMarkup(kbd_rows)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+        await update.callback_query.answer()
+
+async def admin_feedback_details_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, feedback_id: int):
+    """Детали отзыва"""
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        return
+
+    all_feedback = db.get_all_feedback(limit=1000)
+    feedback = next((f for f in all_feedback if f.get('id') == feedback_id), None)
+
+    if not feedback:
+        await update.callback_query.answer("Отзыв не найден", show_alert=True)
+        return
+
+    user_id = feedback.get('user_id')
+    username = feedback.get('username') or 'без username'
+    first_name = feedback.get('first_name') or 'Без имени'
+    last_name = feedback.get('last_name', '')
+    message = feedback.get('message', '')
+    created_at = feedback.get('created_at', '')
+
+    # Форматируем дату
+    try:
+        if isinstance(created_at, str):
+            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+        else:
+            dt = created_at
+        date_str = dt.strftime('%d.%m.%Y %H:%M:%S')
+    except:
+        date_str = str(created_at)
+
+    # Получаем информацию о пользователе
+    user_info = db.get_user(user_id)
+    user_mode = user_info.get('default_mode') if user_info else None
+    mode_text = "Студент" if user_mode == "student" else "Преподаватель" if user_mode == "teacher" else "Не выбран"
+
+    text = (
+        f"💬 <b>Отзыв #{feedback_id}</b>\n\n"
+        f"👤 <b>Пользователь:</b>\n"
+        f"   • Имя: {escape_html(first_name)}"
+        f"{' ' + escape_html(last_name) if last_name else ''}\n"
+        f"   • Username: @{escape_html(username)}\n"
+        f"   • ID: <code>{user_id}</code>\n"
+        f"   • Режим: {mode_text}\n\n"
+        f"📅 <b>Дата:</b> {date_str}\n\n"
+        f"💬 <b>Отзыв:</b>\n"
+        f"<i>{escape_html(message)}</i>"
+    )
+
+    kbd = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Ответить пользователю", callback_data=f"{CALLBACK_ADMIN_MESSAGE_USER_PREFIX}{user_id}")],
+        [InlineKeyboardButton("⬅️ К списку отзывов", callback_data=CALLBACK_ADMIN_FEEDBACK_LIST)],
+        [InlineKeyboardButton("🏠 В меню", callback_data=CALLBACK_ADMIN_MENU)],
+    ])
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+        await update.callback_query.answer()
+
 async def admin_exit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выход из админ-панели - возврат к обычному режиму"""
     if not update.effective_user or not is_admin(update.effective_user.id):
@@ -1364,6 +1549,23 @@ async def admin_callback_router(update: Update, context: ContextTypes.DEFAULT_TY
         await admin_confirm_broadcast_callback(update, context)
     elif data == CALLBACK_ADMIN_EXIT:
         await admin_exit_callback(update, context)
+    elif data == CALLBACK_ADMIN_FEEDBACK:
+        await admin_feedback_callback(update, context)
+    elif data == CALLBACK_ADMIN_FEEDBACK_LIST:
+        await admin_feedback_list_callback(update, context)
+    elif data.startswith(CALLBACK_ADMIN_FEEDBACK_PAGE_PREFIX):
+        try:
+            page = int(data.replace(CALLBACK_ADMIN_FEEDBACK_PAGE_PREFIX, "", 1))
+        except ValueError:
+            page = 0
+        await admin_feedback_list_callback(update, context, page=page)
+    elif data.startswith(CALLBACK_ADMIN_FEEDBACK_DETAILS_PREFIX):
+        try:
+            feedback_id = int(data.replace(CALLBACK_ADMIN_FEEDBACK_DETAILS_PREFIX, "", 1))
+        except ValueError:
+            await update.callback_query.answer("Отзыв не найден", show_alert=True)
+            return
+        await admin_feedback_details_callback(update, context, feedback_id)
     elif data.startswith(CALLBACK_ADMIN_USERS_PAGE_PREFIX):
         try:
             page = int(data.replace(CALLBACK_ADMIN_USERS_PAGE_PREFIX, "", 1))

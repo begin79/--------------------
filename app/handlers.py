@@ -1794,9 +1794,13 @@ async def setup_export_process(
 
 async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     """Экспорт расписания на неделю картинкой"""
-    user_id = update.effective_user.id
-    username = update.effective_user.username or "без username"
-    logger.info(f"📤 [{user_id}] @{username} → Экспорт расписания: неделя (картинка)")
+    if not update.callback_query:
+        logger.error("export_week_schedule_image вызван без callback_query")
+        return
+    
+    user_id = update.effective_user.id if update.effective_user else "unknown"
+    username = update.effective_user.username or "без username" if update.effective_user else "unknown"
+    logger.info(f"📤 [{user_id}] @{username} → Экспорт расписания: неделя (картинка), data: {data[:50]}")
 
     # Используем setup_export_process с парсингом недели
     mode, query_hash, entity_name, week_offset, success = await setup_export_process(
@@ -1887,21 +1891,28 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
                 await update.callback_query.message.reply_text(text, parse_mode=ParseMode.HTML)
                 await progress.finish("ℹ️ Отправил текст вместо картинки.", delete_after=0)
         except Exception as e:
-            logger.error(f"Ошибка при генерации картинки: {e}", exc_info=True)
+            logger.error(f"❌ Ошибка при генерации картинки недели: {e}", exc_info=True)
             try:
                 await update.callback_query.message.reply_text(
                     "❌ Произошла ошибка при генерации картинки. Попробуйте позже."
                 )
-            except Exception:
-                pass
-            await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
+            except Exception as reply_error:
+                logger.error(f"Ошибка при отправке сообщения об ошибке: {reply_error}")
+            try:
+                await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
+            except Exception as progress_error:
+                logger.error(f"Ошибка при завершении прогресса: {progress_error}")
         # Блокировка снимется автоматически через context manager
 
 async def export_week_schedule_file(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     """Экспорт расписания на неделю файлом"""
-    user_id = update.effective_user.id
-    username = update.effective_user.username or "без username"
-    logger.info(f"📤 [{user_id}] @{username} → Экспорт расписания: неделя (PDF)")
+    if not update.callback_query:
+        logger.error("export_week_schedule_file вызван без callback_query")
+        return
+    
+    user_id = update.effective_user.id if update.effective_user else "unknown"
+    username = update.effective_user.username or "без username" if update.effective_user else "unknown"
+    logger.info(f"📤 [{user_id}] @{username} → Экспорт расписания: неделя (PDF), data: {data[:50]}")
 
     # Используем setup_export_process с парсингом недели
     mode, query_hash, entity_name, week_offset, success = await setup_export_process(
@@ -1996,12 +2007,15 @@ async def export_week_schedule_file(update: Update, context: ContextTypes.DEFAUL
                     pass
                 await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
         except Exception as e:
-            logger.error(f"Ошибка при генерации файла: {e}", exc_info=True)
+            logger.error(f"❌ Ошибка при генерации файла недели: {e}", exc_info=True)
             try:
                 await update.callback_query.message.reply_text("❌ Произошла ошибка при генерации файла. Попробуйте позже.")
-            except Exception:
-                pass
-            await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
+            except Exception as reply_error:
+                logger.error(f"Ошибка при отправке сообщения об ошибке: {reply_error}")
+            try:
+                await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
+            except Exception as progress_error:
+                logger.error(f"Ошибка при завершении прогресса: {progress_error}")
         # Блокировка снимется автоматически через context manager
 
 async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
@@ -2099,7 +2113,12 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 logger.warning(f"Не удалось получить расписание для {date_str}: {err}")
                 continue
 
-            img_bytes = await generate_day_schedule_image(day_schedule, entity_name, entity_type)
+            try:
+                img_bytes = await generate_day_schedule_image(day_schedule, entity_name, entity_type)
+            except Exception as img_error:
+                logger.error(f"Ошибка при генерации картинки для {date_str}: {img_error}", exc_info=True)
+                img_bytes = None
+            
             if img_bytes:
                 # Добавляем в медиагруппу (подпись только у первой картинки)
                 if len(media_group) == 0:
@@ -2172,20 +2191,31 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
             except Exception:
                 pass
     except Exception as e:
-        logger.error(f"Ошибка при генерации картинок по дням: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка при генерации картинок по дням: {e}", exc_info=True)
         try:
             await update.callback_query.message.reply_text("❌ Произошла ошибка при генерации картинок. Попробуйте позже.")
         except Exception:
             pass
-        await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
-    # Блокировка снимется автоматически через context manager
+        try:
+            await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
+        except Exception:
+            pass
+    finally:
+        # Снимаем блокировку в любом случае
+        set_user_busy(user_data, False)
+        logger.debug(f"Блокировка снята для пользователя {user_id}")
 
 
 async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     """Экспорт полного семестра в Excel"""
     if not update.callback_query:
+        logger.error("export_semester_excel вызван без callback_query")
         return
 
+    user_id = update.effective_user.id if update.effective_user else "unknown"
+    username = update.effective_user.username or "без username" if update.effective_user else "unknown"
+    logger.info(f"📤 [{user_id}] @{username} → Экспорт семестра (Excel), data: {data[:50]}")
+    
     user_data = context.user_data
     mode, query_hash, semester_option = parse_semester_callback_data(data)
     if not mode or not query_hash:
@@ -2287,14 +2317,18 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
 
         await progress.finish()
     except Exception as exc:
-        logger.error(f"Ошибка при экспорте семестра: {exc}", exc_info=True)
-        await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
+        logger.error(f"❌ Ошибка при экспорте семестра: {exc}", exc_info=True)
+        try:
+            await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
+        except Exception as progress_error:
+            logger.error(f"Ошибка при завершении прогресса: {progress_error}")
         try:
             await update.callback_query.message.reply_text("❌ Произошла ошибка при экспорте. Попробуйте позже.")
-        except Exception:
-            pass
+        except Exception as reply_error:
+            logger.error(f"Ошибка при отправке сообщения об ошибке: {reply_error}")
     finally:
         set_user_busy(user_data, False)
+        logger.debug(f"Блокировка снята для пользователя {update.effective_user.id if update.effective_user else 'unknown'}")
 
 # Вспомогательные функции для callback_router
 async def handle_confirm_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
@@ -2549,21 +2583,7 @@ async def process_feedback_message(update: Update, context: ContextTypes.DEFAULT
             ])
         )
         logger.info(f"✅ [{user_id}] @{username} → Оставил отзыв: {text[:50]}...")
-
-        # Уведомляем администратора о новом отзыве
-        try:
-            from .admin.utils import get_root_admin_id
-            admin_id = get_root_admin_id()
-            if admin_id:
-                admin_text = (
-                    f"📬 <b>Новый отзыв</b>\n\n"
-                    f"👤 От: {first_name or 'Без имени'} (@{username or 'без username'})\n"
-                    f"🆔 ID: <code>{user_id}</code>\n\n"
-                    f"💬 <i>{escape_html(text[:500])}</i>"
-                )
-                await context.bot.send_message(admin_id, admin_text, parse_mode=ParseMode.HTML)
-        except Exception as e:
-            logger.warning(f"Не удалось уведомить админа о отзыве: {e}")
+        # Отзывы теперь доступны в админ-панели, не отправляем уведомление
     else:
         await update.message.reply_text("❌ Не удалось сохранить отзыв. Попробуйте позже.")
 
@@ -2714,12 +2734,16 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Если функция принимает только 2 аргумента
                 await handler(update, context)
         except Exception as e:
-            logger.error(f"Ошибка в обработчике callback '{data}': {e}", exc_info=True)
-            await safe_answer_callback_query(
-                update.callback_query,
-                "Произошла ошибка при обработке команды",
-                show_alert=True
-            )
+            user_id = update.effective_user.id if update.effective_user else "unknown"
+            logger.error(f"❌ Ошибка в обработчике callback '{data}' для пользователя {user_id}: {e}", exc_info=True)
+            try:
+                await safe_answer_callback_query(
+                    update.callback_query,
+                    "Произошла ошибка при обработке команды",
+                    show_alert=True
+                )
+            except Exception as answer_error:
+                logger.error(f"Ошибка при ответе на callback query: {answer_error}")
             clear_temporary_states(user_data)
         finally:
             # Всегда очищаем флаг занятости
@@ -2761,12 +2785,16 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     # Если функция принимает только 2 аргумента
                     await handler(update, context)
             except Exception as e:
-                logger.error(f"Ошибка в обработчике префикса '{prefix}': {e}", exc_info=True)
-                await safe_answer_callback_query(
-                    update.callback_query,
-                    "Произошла ошибка при обработке команды",
-                    show_alert=True
-                )
+                user_id = update.effective_user.id if update.effective_user else "unknown"
+                logger.error(f"❌ Ошибка в обработчике префикса '{prefix}' (callback: '{data[:50]}...') для пользователя {user_id}: {e}", exc_info=True)
+                try:
+                    await safe_answer_callback_query(
+                        update.callback_query,
+                        "Произошла ошибка при обработке команды",
+                        show_alert=True
+                    )
+                except Exception as answer_error:
+                    logger.error(f"Ошибка при ответе на callback query: {answer_error}")
                 clear_temporary_states(user_data)
             finally:
                 # Всегда очищаем флаг занятости
