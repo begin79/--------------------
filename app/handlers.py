@@ -2784,8 +2784,8 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Отвечаем на callback сразу (оптимизация UX), кроме случаев,
-    # где нужен собственный текстовый ответ (feedback и др.)
-    if data != CALLBACK_DATA_FEEDBACK:
+    # где обработчик сам отправляет текстовый ответ (feedback, toggle_daily_notifications).
+    if data not in {CALLBACK_DATA_FEEDBACK, CALLBACK_DATA_TOGGLE_DAILY}:
         await safe_answer_callback_query(update.callback_query)
 
     # Словарь для точных совпадений (Direct Match)
