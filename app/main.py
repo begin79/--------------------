@@ -435,4 +435,7 @@ def main() -> None:
         except Exception as e:
             logger.warning(f"Ошибка при закрытии HTTP клиента: {e}")
 
+if __name__ == "__main__":
+    main()
+
 
