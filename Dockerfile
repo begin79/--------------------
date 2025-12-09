@@ -51,5 +51,5 @@ ENV PYTHONUNBUFFERED=1 \
     DATA_DIR=/data
 
 # Run the bot
-CMD ["python", "new_VGLTU_bot.py"]
+CMD ["python", "-m", "app.main"]
 
