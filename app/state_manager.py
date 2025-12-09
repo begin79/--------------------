@@ -50,20 +50,37 @@ def clear_temporary_states(user_data: Dict[str, Any], exclude: Optional[Set[str]
     if keys_to_remove:
         logger.debug(f"Очищено временных состояний: {len(keys_to_remove)}")
 
+import time
+
+BUSY_TIMEOUT = 45  # 45 секунд таймаут для блокировки
+
 def clear_user_busy_state(user_data: Dict[str, Any]) -> None:
     """Очищает флаг занятости пользователя"""
     user_data.pop("ctx_is_busy", None)
+    user_data.pop("ctx_busy_timestamp", None)
 
 def set_user_busy(user_data: Dict[str, Any], busy: bool = True) -> None:
     """Устанавливает флаг занятости пользователя"""
     if busy:
         user_data["ctx_is_busy"] = True
+        user_data["ctx_busy_timestamp"] = time.time()
     else:
         clear_user_busy_state(user_data)
 
 def is_user_busy(user_data: Dict[str, Any]) -> bool:
     """Проверяет, занят ли пользователь"""
-    return user_data.get("ctx_is_busy", False)
+    is_busy = user_data.get("ctx_is_busy", False)
+    
+    # Проверка таймаута блокировки
+    if is_busy:
+        timestamp = user_data.get("ctx_busy_timestamp", 0)
+        if time.time() - timestamp > BUSY_TIMEOUT:
+            # Блокировка устарела
+            logger.warning(f"Сброс зависшей блокировки пользователя (time={time.time() - timestamp:.1f}s)")
+            clear_user_busy_state(user_data)
+            return False
+            
+    return is_busy
 
 def validate_callback_data(data: str, max_length: int = 64) -> bool:
     """
