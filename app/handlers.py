@@ -2783,8 +2783,10 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_answer_callback_query(update.callback_query, "⏳ Пожалуйста, подождите...")
         return
 
-    # Отвечаем на callback сразу (оптимизация UX)
-    await safe_answer_callback_query(update.callback_query)
+    # Отвечаем на callback сразу (оптимизация UX), кроме случаев,
+    # где нужен собственный текстовый ответ (feedback и др.)
+    if data != CALLBACK_DATA_FEEDBACK:
+        await safe_answer_callback_query(update.callback_query)
 
     # Словарь для точных совпадений (Direct Match)
     # Прямая ссылка на функцию, без lambda, так как сигнатуры совпадают
