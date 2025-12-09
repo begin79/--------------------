@@ -2604,14 +2604,15 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         # Форматируем время в формате чч:мм:сс
         time_str = f"{hours_left:02d}:{minutes_left:02d}:{seconds_remaining:02d}"
 
-        # Показываем всплывающее уведомление (как при переключении уведомлений)
+        # Показываем всплывающее уведомление с таймером
+        # Используем show_alert=True для более заметного уведомления (модальное окно)
         await safe_answer_callback_query(
             update.callback_query,
-            f"⏳ Вы уже оставляли отзыв. Повторите через {time_str}",
-            show_alert=False
+            f"⏳ Вы уже оставляли отзыв сегодня.\n\nПовторите через: {time_str}",
+            show_alert=True
         )
         logger.info(f"⏳ [{user_id}] @{username} → Попытка оставить отзыв (ограничение: {time_str})")
-        
+
         # Возвращаемся в меню настроек (как при переключении уведомлений)
         await settings_menu_callback(update, context)
         return
