@@ -152,13 +152,16 @@ class ExportProgress:
 
     async def start(self, text: str) -> None:
         if not self.parent_message:
+            logger.warning("ExportProgress.start: parent_message is None")
             return
         try:
             initial_percent = 5
             self.current_percent = initial_percent
             self.current_text = text
             self.message = await self.parent_message.reply_text(self._format(text, initial_percent))
-        except Exception:
+            logger.debug(f"ExportProgress.start: Сообщение прогресса отправлено (message_id={self.message.message_id if self.message else None})")
+        except Exception as e:
+            logger.error(f"ExportProgress.start: Ошибка при запуске прогресса: {e}", exc_info=True)
             self.message = None
 
     async def update(self, percent: int, text: Optional[str] = None) -> None:
@@ -177,6 +180,7 @@ class ExportProgress:
 
     async def finish(self, text: str = "✅ Экспорт готов!", delete_after: float = 5.0) -> None:
         if not self.message:
+            logger.warning("ExportProgress.finish: self.message is None")
             return
         try:
             await self.message.edit_text(text)
@@ -185,8 +189,8 @@ class ExportProgress:
                 asyncio.create_task(
                     _delete_message_after_delay(bot, self.message.chat_id, self.message.message_id, delete_after)
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"ExportProgress.finish: Ошибка при завершении: {e}", exc_info=True)
 
 
 def _get_admin_dialog_storage(context: ContextTypes.DEFAULT_TYPE) -> dict:
@@ -1642,19 +1646,31 @@ async def show_export_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, d
     """Показать меню экспорта"""
     user_id = update.effective_user.id
     username = update.effective_user.username or "без username"
-    logger.info(f"📤 [{user_id}] @{username} → Открыл меню экспорта")
+    logger.info(f"📤 [{user_id}] @{username} → Открыл меню экспорта, data: {data}")
 
     # data format: "export_menu_{mode}_{query_hash}"
     mode, query_hash = parse_export_callback_data(data, CALLBACK_DATA_EXPORT_MENU)
+    logger.info(f"show_export_menu: mode={mode}, query_hash={query_hash}")
     if not mode or not query_hash:
+        logger.error(f"show_export_menu: Ошибка парсинга данных")
         await update.callback_query.answer("Ошибка данных", show_alert=True)
         return
-    user_data = context.user_data
-    entity_name = user_data.get(f"export_{mode}_{query_hash}")
 
+    user_data = context.user_data
+    export_key = f"export_{mode}_{query_hash}"
+    entity_name = user_data.get(export_key)
+
+    # Если данные не найдены, пытаемся восстановить из сохраненного запроса
     if not entity_name:
-        await update.callback_query.answer("Ошибка: данные не найдены", show_alert=True)
-        return
+        logger.warning(f"show_export_menu: Данные не найдены для ключа '{export_key}', пытаюсь восстановить из CTX_LAST_QUERY")
+        entity_name = user_data.get(CTX_LAST_QUERY)
+        if entity_name:
+            logger.info(f"show_export_menu: Восстановлено из CTX_LAST_QUERY: {entity_name}")
+            user_data[export_key] = entity_name
+        else:
+            logger.error(f"show_export_menu: Не удалось восстановить данные. Доступные ключи: {list(user_data.keys())}")
+            await update.callback_query.answer("Ошибка: данные не найдены. Попробуйте открыть расписание снова.", show_alert=True)
+            return
 
     # Сохраняем состояние для возврата к расписанию
     user_data["export_back_mode"] = mode
@@ -1772,23 +1788,31 @@ async def setup_export_process(
 
     # 1. Парсинг данных
     mode, query_hash = parse_export_callback_data(clean_data, prefix)
+    logger.info(f"setup_export_process: data={data}, clean_data={clean_data}, prefix={prefix}, mode={mode}, query_hash={query_hash}")
     if not mode or not query_hash:
+        logger.error(f"setup_export_process: Ошибка парсинга данных - mode={mode}, query_hash={query_hash}")
         await safe_answer_callback_query(update.callback_query, "Ошибка данных", show_alert=True)
         return None, None, None, 0, False
 
     # 2. Получение имени сущности
-    entity_name = user_data.get(f"export_{mode}_{query_hash}")
+    export_key = f"export_{mode}_{query_hash}"
+    entity_name = user_data.get(export_key)
+    logger.info(f"setup_export_process: Ищу ключ '{export_key}', найдено: {entity_name}")
+    logger.debug(f"setup_export_process: Доступные ключи export_*: {[k for k in user_data.keys() if k.startswith('export_')]}")
     if not entity_name:
-        await safe_answer_callback_query(update.callback_query, "Ошибка: данные не найдены", show_alert=True)
+        logger.error(f"setup_export_process: Entity name не найден для ключа '{export_key}'. Доступные ключи: {[k for k in user_data.keys() if 'export' in k.lower()]}")
+        await safe_answer_callback_query(update.callback_query, "Ошибка: данные не найдены. Попробуйте открыть расписание снова.", show_alert=True)
         return None, None, None, 0, False
 
     # 3. Проверка блокировки
     if is_user_busy(user_data):
+        logger.warning(f"setup_export_process: Пользователь занят")
         await safe_answer_callback_query(update.callback_query, "⏳ Пожалуйста, подождите...")
         return None, None, None, 0, False
 
     # 4. Ответ на callback (блокировку ставим через context manager в вызывающем коде)
     await safe_answer_callback_query(update.callback_query, progress_text)
+    logger.info(f"setup_export_process: Успешно настроен экспорт для {entity_name} (mode={mode}, week_offset={week_offset})")
 
     return mode, query_hash, entity_name, week_offset, True
 
@@ -1797,7 +1821,7 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
     if not update.callback_query:
         logger.error("export_week_schedule_image вызван без callback_query")
         return
-    
+
     user_id = update.effective_user.id if update.effective_user else "unknown"
     username = update.effective_user.username or "без username" if update.effective_user else "unknown"
     logger.info(f"📤 [{user_id}] @{username} → Экспорт расписания: неделя (картинка), data: {data[:50]}")
@@ -1807,20 +1831,26 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
         update, context, data, CALLBACK_DATA_EXPORT_WEEK_IMAGE, "Генерирую картинку...", parse_weeks=True
     )
     if not success:
+        logger.error(f"export_week_schedule_image: setup_export_process вернул success=False")
         return
+
+    logger.info(f"export_week_schedule_image: Начинаю экспорт для {entity_name} (mode={mode}, week_offset={week_offset})")
 
     # Используем контекстный менеджер для гарантированного снятия блокировки
     user_data = context.user_data
     with user_busy_context(user_data):
         progress = ExportProgress(update.callback_query.message)
         await progress.start("⏳ Подготавливаю расписание...")
+        logger.info(f"export_week_schedule_image: Прогресс запущен")
 
         try:
             entity_type = API_TYPE_TEACHER if mode == MODE_TEACHER else API_TYPE_GROUP
             from .export import get_week_schedule_structured, generate_schedule_image
 
             # Получаем расписание для выбранной недели
+            logger.info(f"export_week_schedule_image: Запрашиваю расписание для {entity_name} (тип: {entity_type}, неделя: {week_offset})")
             week_schedule = await get_week_schedule_structured(entity_name, entity_type, week_offset=week_offset)
+            logger.info(f"export_week_schedule_image: Получено расписание: {len(week_schedule) if week_schedule else 0} дней")
 
             # Если week_offset не был указан (0) и на текущей неделе нет пар, проверяем следующую неделю
             if week_offset == 0 and not week_schedule:
@@ -1857,8 +1887,10 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
                 return
 
             await progress.update(60, "🖼 Рисую изображение...")
+            logger.info(f"export_week_schedule_image: Начинаю генерацию изображения")
             # Генерируем картинку (это может занять время)
             img_bytes = await generate_schedule_image(week_schedule, entity_name, entity_type)
+            logger.info(f"export_week_schedule_image: Изображение сгенерировано: {img_bytes is not None}")
 
             if img_bytes:
                 entity_label = ENTITY_TEACHER_GENITIVE if mode == MODE_TEACHER else ENTITY_GROUP_GENITIVE
@@ -1879,12 +1911,29 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
                     [InlineKeyboardButton("⬅️ Назад к расписанию", callback_data=CallbackData.BACK_TO_SCHEDULE.value)],
                     [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
                 ])
-                await update.callback_query.message.reply_photo(
-                    photo=img_bytes,
-                    caption=f"📅 Расписание на неделю для {entity_label}: {escape_html(entity_name)}",
-                    reply_markup=back_kbd
-                )
-                await progress.finish()
+
+                logger.info(f"export_week_schedule_image: Отправляю изображение пользователю")
+                try:
+                    await update.callback_query.message.reply_photo(
+                        photo=img_bytes,
+                        caption=f"📅 Расписание на неделю для {entity_label}: {escape_html(entity_name)}",
+                        reply_markup=back_kbd
+                    )
+                    logger.info(f"export_week_schedule_image: Изображение успешно отправлено")
+                except Exception as send_error:
+                    logger.error(f"export_week_schedule_image: Ошибка при отправке изображения: {send_error}", exc_info=True)
+                    try:
+                        await update.callback_query.message.reply_text(
+                            f"❌ Ошибка при отправке изображения. Попробуйте позже.",
+                            reply_markup=back_kbd
+                        )
+                    except Exception:
+                        pass
+
+                try:
+                    await progress.finish("✅ Экспорт готов!")
+                except Exception as progress_error:
+                    logger.error(f"export_week_schedule_image: Ошибка при завершении прогресса: {progress_error}")
             else:
                 from .export import format_week_schedule_text
                 text = format_week_schedule_text(week_schedule, entity_name, entity_type)
@@ -1909,7 +1958,7 @@ async def export_week_schedule_file(update: Update, context: ContextTypes.DEFAUL
     if not update.callback_query:
         logger.error("export_week_schedule_file вызван без callback_query")
         return
-    
+
     user_id = update.effective_user.id if update.effective_user else "unknown"
     username = update.effective_user.username or "без username" if update.effective_user else "unknown"
     logger.info(f"📤 [{user_id}] @{username} → Экспорт расписания: неделя (PDF), data: {data[:50]}")
@@ -2118,7 +2167,7 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
             except Exception as img_error:
                 logger.error(f"Ошибка при генерации картинки для {date_str}: {img_error}", exc_info=True)
                 img_bytes = None
-            
+
             if img_bytes:
                 # Добавляем в медиагруппу (подпись только у первой картинки)
                 if len(media_group) == 0:
@@ -2215,16 +2264,22 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id if update.effective_user else "unknown"
     username = update.effective_user.username or "без username" if update.effective_user else "unknown"
     logger.info(f"📤 [{user_id}] @{username} → Экспорт семестра (Excel), data: {data[:50]}")
-    
+
     user_data = context.user_data
     mode, query_hash, semester_option = parse_semester_callback_data(data)
+    logger.info(f"export_semester_excel: data={data}, mode={mode}, query_hash={query_hash}, semester_option={semester_option}")
     if not mode or not query_hash:
+        logger.error(f"export_semester_excel: Ошибка парсинга данных - mode={mode}, query_hash={query_hash}")
         await safe_answer_callback_query(update.callback_query, "Ошибка данных", show_alert=True)
         return
 
-    entity_name = user_data.get(f"export_{mode}_{query_hash}")
+    export_key = f"export_{mode}_{query_hash}"
+    entity_name = user_data.get(export_key)
+    logger.info(f"export_semester_excel: Ищу ключ '{export_key}', найдено: {entity_name}")
+    logger.debug(f"export_semester_excel: Доступные ключи export_*: {[k for k in user_data.keys() if k.startswith('export_')]}")
     if not entity_name:
-        await safe_answer_callback_query(update.callback_query, "Ошибка: данные не найдены", show_alert=True)
+        logger.error(f"export_semester_excel: Entity name не найден для ключа '{export_key}'. Доступные ключи: {[k for k in user_data.keys() if 'export' in k.lower()]}")
+        await safe_answer_callback_query(update.callback_query, "Ошибка: данные не найдены. Попробуйте открыть расписание снова.", show_alert=True)
         return
 
     if not semester_option:
@@ -2250,24 +2305,31 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
     set_user_busy(user_data, True)
     progress = ExportProgress(update.callback_query.message)
     await progress.start("⏳ Собираю данные семестра...")
+    logger.info(f"export_semester_excel: Начинаю экспорт семестра для {entity_name} (semester_option={semester_option})")
 
     try:
         semester_key = None if semester_option == "auto" else semester_option
         start_date, end_date, semester_label = resolve_semester_bounds(semester_key, None, None, None)
+        logger.info(f"export_semester_excel: Семестр: {semester_label}, период: {start_date} - {end_date}")
         await progress.update(20, f"📅 {semester_label}")
 
         entity_type = API_TYPE_GROUP if mode == "student" else API_TYPE_TEACHER
+        logger.info(f"export_semester_excel: Запрашиваю расписание для {entity_name} (тип: {entity_type})")
         timetable = await fetch_semester_schedule(entity_name, entity_type, start_date, end_date)
+        logger.info(f"export_semester_excel: Получено расписаний: {len(timetable) if timetable else 0}")
 
         if not timetable:
+            logger.warning(f"export_semester_excel: Нет расписания для периода")
             await progress.finish("📅 За период нет занятий.", delete_after=0)
             await update.callback_query.message.reply_text("❌ За выбранный период нет занятий.")
             return
 
         await progress.update(55, "📘 Формирую Excel...")
+        logger.info(f"export_semester_excel: Начинаю построение Excel")
         workbook, per_group_rows, per_teacher_rows, total_hours, per_group_hours, per_teacher_hours = build_excel_workbook(
             entity_name, mode, semester_label, timetable
         )
+        logger.info(f"export_semester_excel: Excel построен, всего часов: {total_hours:.1f}")
 
         main_buffer = BytesIO()
         workbook.save(main_buffer)
@@ -2293,13 +2355,30 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
         ])
 
         await progress.update(80, "📤 Отправляю файл...")
-        await update.callback_query.message.reply_document(
-            document=main_buffer,
-            filename=filename,
-            caption=caption,
-            parse_mode=ParseMode.HTML,
-            reply_markup=back_kbd
-        )
+        logger.info(f"export_semester_excel: Отправляю Excel файл пользователю")
+        try:
+            await update.callback_query.message.reply_document(
+                document=main_buffer,
+                filename=filename,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                reply_markup=back_kbd
+            )
+            logger.info(f"export_semester_excel: Excel файл успешно отправлен")
+        except Exception as send_error:
+            logger.error(f"export_semester_excel: Ошибка при отправке файла: {send_error}", exc_info=True)
+            try:
+                await update.callback_query.message.reply_text(
+                    f"❌ Ошибка при отправке файла. Попробуйте позже.",
+                    reply_markup=back_kbd
+                )
+            except Exception:
+                pass
+            try:
+                await progress.finish("❌ Ошибка при отправке файла.", delete_after=0)
+            except Exception:
+                pass
+            return
 
         if mode == MODE_TEACHER and per_group_rows:
             zip_bytes, groups_count = build_group_archive_bytes(per_group_rows, per_group_hours, entity_name, semester_label)
@@ -2315,7 +2394,8 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
                     reply_markup=back_kbd
                 )
 
-        await progress.finish()
+        await progress.finish("✅ Экспорт готов!")
+        logger.info(f"export_semester_excel: Экспорт успешно завершен")
     except Exception as exc:
         logger.error(f"❌ Ошибка при экспорте семестра: {exc}", exc_info=True)
         try:

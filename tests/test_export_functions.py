@@ -36,12 +36,12 @@ def print_section(title: str):
 async def test_get_week_schedule():
     """Тест получения расписания на неделю"""
     print_section("ТЕСТ: Получение расписания на неделю")
-    
+
     test_cases = [
         ("ЮР1-251-ОТ", API_TYPE_GROUP, "Группа ЮР1-251-ОТ"),
         ("Фролов С.В.", API_TYPE_TEACHER, "Преподаватель Фролов С.В."),
     ]
-    
+
     for entity_name, entity_type, description in test_cases:
         print(f"\n  📊 Тест: {description}")
         try:
@@ -60,18 +60,18 @@ async def test_get_week_schedule():
 async def test_generate_images():
     """Тест генерации изображений"""
     print_section("ТЕСТ: Генерация изображений")
-    
+
     # Получаем расписание для теста
     entity_name = "ЮР1-251-ОТ"
     entity_type = API_TYPE_GROUP
-    
+
     print(f"\n  📊 Получение расписания для {entity_name}...")
     week_schedule = await get_week_schedule_structured(entity_name, entity_type)
-    
+
     if not week_schedule:
         print("     ⚠️ Нет расписания для теста")
         return
-    
+
     # Тест генерации недельного изображения
     print(f"\n  📊 Тест: Генерация недельного изображения")
     try:
@@ -84,14 +84,14 @@ async def test_generate_images():
         print(f"     ❌ Ошибка: {e}")
         import traceback
         traceback.print_exc()
-    
+
     # Тест генерации дневного изображения
     print(f"\n  📊 Тест: Генерация дневного изображения")
     try:
         # Берем первый день с парами
         first_date = list(week_schedule.keys())[0]
         day_schedule, err = await get_schedule_structured(first_date, entity_name, entity_type)
-        
+
         if err or not day_schedule:
             print(f"     ⚠️ Не удалось получить расписание для дня: {err}")
         else:
@@ -108,17 +108,17 @@ async def test_generate_images():
 async def test_format_text():
     """Тест форматирования текста"""
     print_section("ТЕСТ: Форматирование текста")
-    
+
     entity_name = "ЮР1-251-ОТ"
     entity_type = API_TYPE_GROUP
-    
+
     print(f"\n  📊 Получение расписания для {entity_name}...")
     week_schedule = await get_week_schedule_structured(entity_name, entity_type)
-    
+
     if not week_schedule:
         print("     ⚠️ Нет расписания для теста")
         return
-    
+
     try:
         text = format_week_schedule_text(week_schedule, entity_name, entity_type)
         if text:
@@ -139,21 +139,21 @@ async def main():
     print("\n" + "=" * 60)
     print("  🚀 ТЕСТИРОВАНИЕ ФУНКЦИЙ ЭКСПОРТА")
     print("=" * 60)
-    
+
     try:
         # Тест получения расписания
         await test_get_week_schedule()
-        
+
         # Тест генерации изображений
         await test_generate_images()
-        
+
         # Тест форматирования текста
         await test_format_text()
-        
+
         print("\n" + "=" * 60)
         print("  ✅ ТЕСТИРОВАНИЕ ЗАВЕРШЕНО")
         print("=" * 60 + "\n")
-        
+
     except KeyboardInterrupt:
         print("\n\n  ⚠️ Тестирование прервано пользователем")
     except Exception as e:

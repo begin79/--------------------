@@ -39,6 +39,10 @@ users.db
 admin.db
 *.db-journal
 
+# Backups
+backups/
+*.db-backup
+
 # Config files with sensitive data
 # Разрешаем config.py.example, но не config.py с реальными данными
 # app/config.py - removed from ignore to allow committing the env-var based config

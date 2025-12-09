@@ -1335,10 +1335,10 @@ async def admin_feedback_list_callback(update: Update, context: ContextTypes.DEF
 
     all_feedback = db.get_all_feedback(limit=1000)
     total_count = len(all_feedback)
-    
+
     # Сортируем по дате (новые сначала)
     all_feedback.sort(key=lambda x: x.get('created_at', ''), reverse=True)
-    
+
     # Пагинация
     start_idx = page * FEEDBACK_PAGE_SIZE
     end_idx = start_idx + FEEDBACK_PAGE_SIZE
@@ -1352,7 +1352,7 @@ async def admin_feedback_list_callback(update: Update, context: ContextTypes.DEF
         ])
     else:
         text_lines = [f"📋 <b>Отзывы</b> (стр. {page + 1}/{total_pages if total_pages > 0 else 1})\n"]
-        
+
         for idx, feedback in enumerate(page_feedback, start=start_idx + 1):
             feedback_id = feedback.get('id')
             user_id = feedback.get('user_id')
@@ -1360,7 +1360,7 @@ async def admin_feedback_list_callback(update: Update, context: ContextTypes.DEF
             first_name = feedback.get('first_name') or 'Без имени'
             message = feedback.get('message', '')
             created_at = feedback.get('created_at', '')
-            
+
             # Форматируем дату
             try:
                 if isinstance(created_at, str):
@@ -1370,12 +1370,12 @@ async def admin_feedback_list_callback(update: Update, context: ContextTypes.DEF
                 date_str = dt.strftime('%d.%m.%Y %H:%M')
             except:
                 date_str = str(created_at)[:16]
-            
+
             # Обрезаем сообщение для списка
             message_preview = message[:60] + "..." if len(message) > 60 else message
             is_read = feedback.get('is_read', False)
             read_marker = "✅" if is_read else "🆕"
-            
+
             text_lines.append(
                 f"{read_marker} <b>#{idx}</b> | {date_str}\n"
                 f"👤 {escape_html(first_name)} (@{escape_html(username)})\n"
@@ -1394,7 +1394,7 @@ async def admin_feedback_list_callback(update: Update, context: ContextTypes.DEF
             message_preview = feedback.get('message', '')[:30] + "..." if len(feedback.get('message', '')) > 30 else feedback.get('message', '')
             is_read = feedback.get('is_read', False)
             read_marker = "✅" if is_read else "🆕"
-            
+
             kbd_rows.append([
                 InlineKeyboardButton(
                     f"{read_marker} {escape_html(first_name)} - {escape_html(message_preview)}",
