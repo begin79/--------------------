@@ -2154,8 +2154,8 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
     with user_busy_context(user_data):
         try:
             entity_type = API_TYPE_TEACHER if mode == MODE_TEACHER else API_TYPE_GROUP
-        from .export import get_week_schedule_structured, generate_day_schedule_image
-        from .schedule import get_schedule_structured
+            from .export import get_week_schedule_structured, generate_day_schedule_image
+            from .schedule import get_schedule_structured
 
         # Используем ту же логику, что и в get_week_schedule_structured
         today = datetime.date.today()
@@ -2290,20 +2290,16 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 await update.callback_query.message.reply_text("⚠️ Не удалось сгенерировать изображения.")
             except Exception:
                 pass
-    except Exception as e:
-        logger.error(f"❌ Ошибка при генерации картинок по дням: {e}", exc_info=True)
-        try:
-            await update.callback_query.message.reply_text("❌ Произошла ошибка при генерации картинок. Попробуйте позже.")
-        except Exception:
-            pass
-        try:
-            await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
-        except Exception:
-            pass
-    finally:
-        # Снимаем блокировку в любом случае
-        set_user_busy(user_data, False)
-        logger.debug(f"Блокировка снята для пользователя {user_id}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при генерации картинок по дням: {e}", exc_info=True)
+            try:
+                await update.callback_query.message.reply_text("❌ Произошла ошибка при генерации картинок. Попробуйте позже.")
+            except Exception:
+                pass
+            try:
+                await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
+            except Exception:
+                pass
 
 
 async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
