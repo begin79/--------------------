@@ -619,7 +619,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Для новых пользователей без установленной группы показываем выбор режима
     if is_first_time and not default_query:
         text = "👋 Привет! Я бот для получения расписания ВГЛТУ 📅\n\n"
-        text += "Кто вы?"
+        text += "Выберите, кто вы:"
 
         keyboard_rows = [
             [InlineKeyboardButton("🎓 Студент", callback_data=CALLBACK_DATA_MODE_STUDENT)],
@@ -774,9 +774,10 @@ async def settings_menu_callback(update: Update, context: ContextTypes.DEFAULT_T
     is_daily = user_data.get(CTX_DAILY_NOTIFICATIONS, False)
     notification_time = user_data.get(CTX_NOTIFICATION_TIME, DEFAULT_NOTIFICATION_TIME)
     logger.debug(f"📊 [{user_id}] Настройки: группа='{query}', уведомления={'вкл' if is_daily else 'выкл'}")
-    # Формируем текст настроек без тире
+    # Формируем текст настроек с улучшенной структурой
     text = "⚙️ <b>Настройки</b>\n\n"
-    text += f"Текущая группа/преподаватель:\n<code>{escape_html(query)}</code>\n\nВремя уведомлений: <code>{notification_time}</code>"
+    text += f"📌 Текущая группа/преподаватель:\n   <code>{escape_html(query)}</code>\n\n"
+    text += f"⏰ Время уведомлений:\n   <code>{notification_time}</code>"
     kbd = InlineKeyboardMarkup([
         [InlineKeyboardButton("Установить/изменить группу", callback_data="set_default_mode_student")],
         [InlineKeyboardButton("Установить/изменить преподавателя", callback_data="set_default_mode_teacher")],
@@ -1156,12 +1157,19 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
         if err or not found:
             # Очищаем сохраненные варианты при ошибке
             user_data.pop(CTX_FOUND_ENTITIES, None)
-            suggestion = "Попробуйте ввести более точное название или хотя бы первые 3-4 буквы."
+            # Улучшенное сообщение об ошибке с примерами
+            error_text = f"❌ <b>{not_found}</b>\n\n"
+            error_text += f"💡 <b>Попробуйте:</b>\n"
+            error_text += f"   • Ввести первые 3-4 буквы: <code>{text[:4] if len(text) >= 4 else text}</code>\n"
+            if mode == MODE_STUDENT:
+                error_text += f"   • Проверить формат: <code>ИС1-231-ОТ</code>\n"
+            else:
+                error_text += f"   • Ввести фамилию: <code>Иванов</code>\n"
+            error_text += f"   • Использовать точное название"
             # Устанавливаем стандартную клавиатуру
             reply_keyboard = get_default_reply_keyboard()
-            error_text = err or f"{not_found} {suggestion}"
             error_kbd = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]])
-            await update.message.reply_text(error_text, reply_markup=reply_keyboard)
+            await update.message.reply_text(error_text, reply_markup=reply_keyboard, parse_mode=ParseMode.HTML)
             await update.message.reply_text("💡 Используйте кнопки ниже для навигации:", reply_markup=error_kbd)
             return
 
@@ -1296,10 +1304,10 @@ async def send_schedule_with_pagination(update: Update, context: ContextTypes.DE
         logger.debug(f"📋 [{user_id}] @{username} → Отображение расписания '{query}' (страница {idx + 1}/{len(pages)})")  # Изменено с INFO на DEBUG
 
     entity = ENTITY_GROUP_GENITIVE if mode == MODE_STUDENT else ENTITY_TEACHER_GENITIVE
-    # Улучшенное форматирование расписания с breadcrumbs
+    # Улучшенное форматирование расписания (убрано дублирование)
     section_emoji = "🎓" if mode == MODE_STUDENT else "🧑‍🏫"
-    header = f"{section_emoji} <b>Расписание</b> → {entity.capitalize()}\n"
-    header += f"📅 <b>Расписание для {entity}</b>\n"
+    entity_text = "группы" if mode == MODE_STUDENT else "преподавателя"
+    header = f"{section_emoji} <b>Расписание {entity_text}</b>\n"
     header += f"👤 <b>{escape_html(query)}</b>\n"
     header += f"📄 Страница {idx + 1} из {len(pages)}\n\n"
 
@@ -1322,14 +1330,14 @@ async def send_schedule_with_pagination(update: Update, context: ContextTypes.DE
     nav_row = []
     if idx > 0:
         prev_callback = f"{CALLBACK_DATA_PREV_SCHEDULE_PREFIX}{mode}_{idx-1}"
-        nav_row.append(InlineKeyboardButton("⬅️ Назад", callback_data=prev_callback))
+        nav_row.append(InlineKeyboardButton("⬅️ Предыдущая", callback_data=prev_callback))
 
     refresh_callback = f"{CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX}{mode}_{idx}"
     nav_row.append(InlineKeyboardButton("🔄 Обновить", callback_data=refresh_callback))
 
     if idx < len(pages) - 1:
         next_callback = f"{CALLBACK_DATA_NEXT_SCHEDULE_PREFIX}{mode}_{idx+1}"
-        nav_row.append(InlineKeyboardButton("Вперед ➡️", callback_data=next_callback))
+        nav_row.append(InlineKeyboardButton("Следующая ➡️", callback_data=next_callback))
 
     kbd_rows = [nav_row] if nav_row else []
 
@@ -2930,8 +2938,8 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (CALLBACK_DATA_EXPORT_MENU, show_export_menu),
         (CALLBACK_DATA_EXPORT_WEEK_IMAGE, export_week_schedule_image),
         (CALLBACK_DATA_EXPORT_WEEK_FILE, export_week_schedule_file),
-        (CALLBACK_DATA_EXPORT_DAYS_IMAGES, export_days_images),
-        (CALLBACK_DATA_EXPORT_SEMESTER, export_semester_excel),
+        (CALLBACK_DATA_EXPORT_DAYS_IMAGES + "_", export_days_images),
+        (CALLBACK_DATA_EXPORT_SEMESTER + "_", export_semester_excel),
         ("set_default_mode_", handle_set_default_mode),
         ("set_default_from_schedule_", handle_set_default_from_schedule),
         ("quick_schedule_", handle_quick_schedule),

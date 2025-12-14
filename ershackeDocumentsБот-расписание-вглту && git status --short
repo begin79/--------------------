@@ -1,0 +1,22 @@
+[1mdiff --git a/app/schedule.py b/app/schedule.py[m
+[1mindex 53c3216..6759708 100644[m
+[1m--- a/app/schedule.py[m
+[1m+++ b/app/schedule.py[m
+[36m@@ -234,7 +234,7 @@[m [mdef find_schedule_divs(soup: BeautifulSoup) -> List:[m
+             if re.search(r'\d{2}\.\d{2}\.\d{4}', text) or \[m
+                re.search(r'\d+\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)', text.lower()):[m
+                 candidates.append(div)[m
+[31m-    [m
+[32m+[m
+     if candidates:[m
+         logger.debug(f"Найдено {len(candidates)} дней по альтернативной стратегии (strong tag)")[m
+         return candidates[m
+[36m@@ -266,7 +266,7 @@[m [masync def get_schedule_structured(date_str: str, query_value: str, entity_type:[m
+         return None, "😔 Не удалось загрузить расписание. Попробуйте позже."[m
+ [m
+     soup = BeautifulSoup(response.text, "lxml")[m
+[31m-    [m
+[32m+[m
+     # Ищем div с расписанием[m
+     days_html = find_schedule_divs(soup)[m
+     if not days_html:[m

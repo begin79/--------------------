@@ -234,7 +234,7 @@ def find_schedule_divs(soup: BeautifulSoup) -> List:
             if re.search(r'\d{2}\.\d{2}\.\d{4}', text) or \
                re.search(r'\d+\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)', text.lower()):
                 candidates.append(div)
-    
+
     if candidates:
         logger.debug(f"Найдено {len(candidates)} дней по альтернативной стратегии (strong tag)")
         return candidates
@@ -266,7 +266,7 @@ async def get_schedule_structured(date_str: str, query_value: str, entity_type: 
         return None, "😔 Не удалось загрузить расписание. Попробуйте позже."
 
     soup = BeautifulSoup(response.text, "lxml")
-    
+
     # Ищем div с расписанием
     days_html = find_schedule_divs(soup)
     if not days_html:
