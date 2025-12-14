@@ -192,7 +192,7 @@ async def get_schedule(date_str: str, query_value: str, entity_type: Literal["Gr
                     if group_names != "-":
                         pair_info += f"  👥 {group_names}\n"
 
-                    day_text += pair_info + "\n——————————————————————————\n"
+                    day_text += pair_info + "\n——————————————————————\n"
                 except Exception as e:
                     logger.error(f"Ошибка при обработке пары: {e}", exc_info=True)
                     continue

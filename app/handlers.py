@@ -775,11 +775,8 @@ async def settings_menu_callback(update: Update, context: ContextTypes.DEFAULT_T
     is_daily = user_data.get(CTX_DAILY_NOTIFICATIONS, False)
     notification_time = user_data.get(CTX_NOTIFICATION_TIME, DEFAULT_NOTIFICATION_TIME)
     logger.debug(f"📊 [{user_id}] Настройки: группа='{query}', уведомления={'вкл' if is_daily else 'выкл'}")
-    # Добавляем breadcrumbs
-    text = "⚙️ <b>Настройки</b>\n"
-    text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    text += f"Текущая группа/преподаватель:\n<code>{escape_html(query)}</code>\n\nВремя уведомлений: <code>{notification_time}</code>"
-    text += f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    # Формируем текст настроек без тире
+    text = "⚙️ <b>Настройки</b>\n\n"
     text += f"Текущая группа/преподаватель:\n<code>{escape_html(query)}</code>\n\nВремя уведомлений: <code>{notification_time}</code>"
     kbd = InlineKeyboardMarkup([
         [InlineKeyboardButton("Установить/изменить группу", callback_data="set_default_mode_student")],
@@ -1305,8 +1302,7 @@ async def send_schedule_with_pagination(update: Update, context: ContextTypes.DE
     header = f"{section_emoji} <b>Расписание</b> → {entity.capitalize()}\n"
     header += f"📅 <b>Расписание для {entity}</b>\n"
     header += f"👤 <b>{escape_html(query)}</b>\n"
-    header += f"📄 Страница {idx + 1} из {len(pages)}\n"
-    header += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    header += f"📄 Страница {idx + 1} из {len(pages)}\n\n"
 
     # Проверяем длину сообщения (Telegram ограничивает до 4096 символов)
     schedule_content = pages[idx]
