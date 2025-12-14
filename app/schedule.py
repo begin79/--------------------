@@ -199,8 +199,8 @@ async def get_schedule(date_str: str, query_value: str, entity_type: Literal["Gr
 
             # Убираем последний разделитель, если он есть (совместимость с Python < 3.9)
             day_text_cleaned = day_text.strip()
-            if day_text_cleaned.endswith("——————————————————————————"):
-                day_text_cleaned = day_text_cleaned[:-len("——————————————————————————")].strip()
+            if day_text_cleaned.endswith("——————————————————————"):
+                day_text_cleaned = day_text_cleaned[:-len("——————————————————————")].strip()
             pages.append(day_text_cleaned)
         except Exception as e:
             logger.error(f"Ошибка при обработке дня: {e}", exc_info=True)
