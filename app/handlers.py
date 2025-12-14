@@ -2153,7 +2153,7 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
     with user_busy_context(user_data):
         try:
-        entity_type = API_TYPE_TEACHER if mode == MODE_TEACHER else API_TYPE_GROUP
+            entity_type = API_TYPE_TEACHER if mode == MODE_TEACHER else API_TYPE_GROUP
         from .export import get_week_schedule_structured, generate_day_schedule_image
         from .schedule import get_schedule_structured
 
@@ -2208,7 +2208,7 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
             if err or not day_schedule:
                 logger.warning(f"Не удалось получить расписание для {date_str}: {err}")
                 continue
-            
+
             # Проверяем, есть ли пары в структурированном расписании
             day_pairs = day_schedule.get("pairs", [])
             if not day_pairs:
@@ -2241,6 +2241,7 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 logger.warning(f"Не удалось сгенерировать картинку для {date_str}")
 
         # Отправляем все картинки одним MediaGroup
+        logger.info(f"Сгенерировано {len(media_group)} картинок для отправки")
         if media_group:
             # Сохраняем состояние для возврата
             user_data["export_back_mode"] = mode
@@ -2268,22 +2269,19 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
             except Exception as e:
                 logger.error(f"Ошибка при отправке MediaGroup: {e}", exc_info=True)
                 # Если MediaGroup не работает, отправляем по одной
+                logger.info(f"Отправляю {len(media_group)} фото по отдельности")
                 for i, media in enumerate(media_group):
                     try:
-                        if i == len(media_group) - 1:
-                            await update.callback_query.message.reply_photo(
-                                photo=media.media,
-                                caption=media.caption,
-                                reply_markup=back_kbd
-                            )
-                        else:
-                            await update.callback_query.message.reply_photo(
-                                photo=media.media,
-                                caption=media.caption
-                            )
-                        await asyncio.sleep(0.3)
+                        caption = media.caption if i == 0 else None
+                        reply_markup = back_kbd if i == len(media_group) - 1 else None
+                        await update.callback_query.message.reply_photo(
+                            photo=media.media,
+                            caption=caption,
+                            reply_markup=reply_markup
+                        )
+                        await asyncio.sleep(0.5)  # Увеличена задержка для стабильности
                     except Exception as photo_error:
-                        logger.error(f"Ошибка при отправке фото {i}: {photo_error}")
+                        logger.error(f"Ошибка при отправке фото {i}: {photo_error}", exc_info=True)
 
             await progress.finish()
         else:
