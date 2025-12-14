@@ -2147,12 +2147,12 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
     # Отвечаем на callback сразу
     await safe_answer_callback_query(update.callback_query, "Генерирую картинки по дням...")
 
-    # Устанавливаем блокировку
-    set_user_busy(user_data, True)
+    # Используем context manager для гарантированного снятия блокировки
     progress = ExportProgress(update.callback_query.message)
     await progress.start("⏳ Подготавливаю изображения по дням...")
 
-    try:
+    with user_busy_context(user_data):
+        try:
         entity_type = API_TYPE_TEACHER if mode == MODE_TEACHER else API_TYPE_GROUP
         from .export import get_week_schedule_structured, generate_day_schedule_image
         from .schedule import get_schedule_structured
@@ -2207,6 +2207,12 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
             day_schedule, err = await get_schedule_structured(date_str, entity_name, entity_type)
             if err or not day_schedule:
                 logger.warning(f"Не удалось получить расписание для {date_str}: {err}")
+                continue
+            
+            # Проверяем, есть ли пары в структурированном расписании
+            day_pairs = day_schedule.get("pairs", [])
+            if not day_pairs:
+                logger.debug(f"День {date_str}: нет пар в структурированном расписании, пропускаем")
                 continue
 
             try:
