@@ -644,8 +644,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += "Выберите режим или перейдите в настройки:"
 
         keyboard_rows.extend([
-            [InlineKeyboardButton("🎓 Студента", callback_data=CALLBACK_DATA_MODE_STUDENT)],
-            [InlineKeyboardButton("🧑‍🏫 Преподавателя", callback_data=CALLBACK_DATA_MODE_TEACHER)],
+            [InlineKeyboardButton("🎓 Студент", callback_data=CALLBACK_DATA_MODE_STUDENT)],
+            [InlineKeyboardButton("🧑‍🏫 Преподаватель", callback_data=CALLBACK_DATA_MODE_TEACHER)],
             [InlineKeyboardButton("⚙️ Настройки", callback_data=CALLBACK_DATA_SETTINGS_MENU)],
             [InlineKeyboardButton("ℹ️ Помощь", callback_data=CallbackData.HELP_COMMAND_INLINE.value)]
         ])
@@ -721,7 +721,9 @@ async def help_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     logger.info(f"👤 [{user_id}] @{username} → Команда /help")
 
     text = (
-        "<b>ℹ️ Справка по боту ВГЛТУ Расписание</b>\n\n"
+        "ℹ️ <b>Справка</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<b>Справка по боту ВГЛТУ Расписание</b>\n\n"
         "<b>📋 Основные команды:</b>\n"
         "🔹 <b>/start</b> - Главное меню\n"
         "🔹 <b>/settings</b> - Настройки и уведомления\n"
@@ -740,7 +742,10 @@ async def help_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         "🖼 Изображение - для быстрого просмотра\n\n"
         "💡 <i>Совет: Установите группу по умолчанию для быстрого доступа!</i>"
     )
-    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]])
+    reply_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚙️ Настройки", callback_data=CALLBACK_DATA_SETTINGS_MENU)],
+        [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+    ])
     if update.callback_query:
         if not await safe_edit_message_text(update.callback_query, text, reply_markup=reply_markup, parse_mode=ParseMode.HTML):
             try:
@@ -770,7 +775,12 @@ async def settings_menu_callback(update: Update, context: ContextTypes.DEFAULT_T
     is_daily = user_data.get(CTX_DAILY_NOTIFICATIONS, False)
     notification_time = user_data.get(CTX_NOTIFICATION_TIME, DEFAULT_NOTIFICATION_TIME)
     logger.debug(f"📊 [{user_id}] Настройки: группа='{query}', уведомления={'вкл' if is_daily else 'выкл'}")
-    text = f"<b>⚙️ Настройки</b>\n\nТекущая группа/преподаватель:\n<code>{escape_html(query)}</code>\n\nВремя уведомлений: <code>{notification_time}</code>"
+    # Добавляем breadcrumbs
+    text = "⚙️ <b>Настройки</b>\n"
+    text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    text += f"Текущая группа/преподаватель:\n<code>{escape_html(query)}</code>\n\nВремя уведомлений: <code>{notification_time}</code>"
+    text += f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    text += f"Текущая группа/преподаватель:\n<code>{escape_html(query)}</code>\n\nВремя уведомлений: <code>{notification_time}</code>"
     kbd = InlineKeyboardMarkup([
         [InlineKeyboardButton("Установить/изменить группу", callback_data="set_default_mode_student")],
         [InlineKeyboardButton("Установить/изменить преподавателя", callback_data="set_default_mode_teacher")],
@@ -929,7 +939,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                         [
                             InlineKeyboardButton("✅ Да, это правильный режим", callback_data=f"confirm_mode_{mode}_{hashlib.md5(query_text.encode()).hexdigest()[:8]}"),
                             InlineKeyboardButton("❌ Нет, выбрать другой", callback_data=CALLBACK_DATA_BACK_TO_START)
-                        ]
+                        ],
+                        [InlineKeyboardButton("🔍 Ввести другой запрос", callback_data=CALLBACK_DATA_BACK_TO_START)]
                     ])
                     user_data[f"pending_query_{mode}"] = query_text
                     await update.message.reply_text(
@@ -1012,12 +1023,15 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
         found, err = await search_entities(text, api_type)
 
         if found:
-            logger.info(f"✅ [{user_id}] Найдено {len(found)} вариантов для '{text}'")
+            logger.debug(f"✅ [{user_id}] Найдено {len(found)} вариантов для '{text}'")
         else:
             logger.warning(f"❌ [{user_id}] Не найдено вариантов для '{text}': {err}")
 
         if err or not found:
-            kbd = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_DATA_SETTINGS_MENU)]])
+            kbd = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_DATA_SETTINGS_MENU)],
+                [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+            ])
             await update.message.reply_text("Не удалось найти. Попробуйте еще раз.", reply_markup=kbd)
             return
 
@@ -1032,7 +1046,7 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
             await _apply_default_selection(update, context, match, mode, source="message")
 
             if is_new_user:
-                # Для новых пользователей показываем сообщение об успешной установке и главное меню
+                # Для новых пользователей показываем сообщение об успешной установке и настройки
                 success_msg = await update.message.reply_text(
                     f"✅ Вы установили {mode_text}: <b>{escape_html(match)}</b>\n\n"
                     f"Теперь вы будете получать ежедневные уведомления о расписании.",
@@ -1040,8 +1054,8 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
                 )
                 # Удаляем сообщение через 5 секунд
                 asyncio.create_task(_delete_message_after_delay(context.bot, success_msg.chat_id, success_msg.message_id, 5.0))
-                # Показываем главное меню
-                await start_command(update, context)
+                # Показываем настройки для удобства дальнейшей настройки
+                await settings_menu_callback(update, context)
             else:
                 await settings_menu_callback(update, context)
             return
@@ -1077,7 +1091,10 @@ async def handle_manual_date_input(update: Update, context: ContextTypes.DEFAULT
             msg = await update.message.reply_text("Обновляю расписание...")
             await fetch_and_display_schedule(update, context, user_data[CTX_LAST_QUERY], msg_to_edit=msg)
     except (ValueError, TypeError):
-        kbd = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data=CALLBACK_DATA_CANCEL_INPUT)]])
+        kbd = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Отмена", callback_data=CALLBACK_DATA_CANCEL_INPUT)],
+            [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+        ])
         await update.message.reply_text("Не могу распознать дату. Попробуйте формат ДД.ММ.ГГГГ или ГГГГ-ММ-ДД.", reply_markup=kbd)
 
 async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
@@ -1107,7 +1124,7 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
             # Проверяем точное совпадение (без учета регистра)
             exact_match = next((entity for entity in saved_found if entity.lower() == text.lower()), None)
             if exact_match:
-                logger.info(f"✅ [{user_id}] @{username} → Точное совпадение с сохраненным вариантом: '{exact_match}'")
+                logger.debug(f"✅ [{user_id}] @{username} → Точное совпадение с сохраненным вариантом: '{exact_match}'")
                 # Очищаем сохраненные варианты
                 user_data.pop(CTX_FOUND_ENTITIES, None)
                 # Устанавливаем стандартную клавиатуру
@@ -1118,10 +1135,12 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
                     f"{verb} {s_name}: {exact_match}.\nЗагружаю...",
                     reply_markup=reply_keyboard
                 )
+                # Сохраняем в историю поиска
+                db.save_search_history(user_id, exact_match, mode)
                 await fetch_and_display_schedule(update, context, exact_match)
                 return
 
-        logger.info(f"🔍 [{user_id}] @{username} → Ищет {mode_text}: '{text}'")
+        logger.debug(f"🔍 [{user_id}] @{username} → Ищет {mode_text}: '{text}'")
 
         await update.message.reply_chat_action(ChatAction.TYPING)
         api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
@@ -1130,9 +1149,11 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
         found, err = await search_entities(text, api_type)
 
         if found:
-            logger.info(f"✅ [{user_id}] Найдено {len(found)} {p_name} для запроса '{text}'")
+            logger.debug(f"✅ [{user_id}] Найдено {len(found)} {p_name} для запроса '{text}'")
             if len(found) == 1:
-                logger.info(f"📅 [{user_id}] Загружаю расписание для: {found[0]}")
+                logger.debug(f"📅 [{user_id}] Загружаю расписание для: {found[0]}")
+                # Сохраняем в историю поиска
+                db.save_search_history(user_id, found[0], mode)
         else:
             logger.warning(f"❌ [{user_id}] {not_found} для запроса '{text}': {err}")
 
@@ -1142,7 +1163,10 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
             suggestion = "Попробуйте ввести более точное название или хотя бы первые 3-4 буквы."
             # Устанавливаем стандартную клавиатуру
             reply_keyboard = get_default_reply_keyboard()
-            await update.message.reply_text(err or f"{not_found} {suggestion}", reply_markup=reply_keyboard)
+            error_text = err or f"{not_found} {suggestion}"
+            error_kbd = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]])
+            await update.message.reply_text(error_text, reply_markup=reply_keyboard)
+            await update.message.reply_text("💡 Используйте кнопки ниже для навигации:", reply_markup=error_kbd)
             return
 
         # Устанавливаем стандартную клавиатуру
@@ -1276,8 +1300,10 @@ async def send_schedule_with_pagination(update: Update, context: ContextTypes.DE
         logger.debug(f"📋 [{user_id}] @{username} → Отображение расписания '{query}' (страница {idx + 1}/{len(pages)})")  # Изменено с INFO на DEBUG
 
     entity = ENTITY_GROUP_GENITIVE if mode == MODE_STUDENT else ENTITY_TEACHER_GENITIVE
-    # Улучшенное форматирование расписания
-    header = f"📅 <b>Расписание для {entity}</b>\n"
+    # Улучшенное форматирование расписания с breadcrumbs
+    section_emoji = "🎓" if mode == MODE_STUDENT else "🧑‍🏫"
+    header = f"{section_emoji} <b>Расписание</b> → {entity.capitalize()}\n"
+    header += f"📅 <b>Расписание для {entity}</b>\n"
     header += f"👤 <b>{escape_html(query)}</b>\n"
     header += f"📄 Страница {idx + 1} из {len(pages)}\n"
     header += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1317,6 +1343,24 @@ async def send_schedule_with_pagination(update: Update, context: ContextTypes.DE
         query_hash = hashlib.md5(query.encode('utf-8')).hexdigest()[:12]
         user_data[f"export_{mode}_{query_hash}"] = query
         kbd_rows.append([InlineKeyboardButton("📤 Экспорт", callback_data=f"{CALLBACK_DATA_EXPORT_MENU}_{mode}_{query_hash}")])
+
+    # Третья строка: быстрые действия
+    action_row = []
+    # Проверяем, не установлена ли уже эта группа/преподаватель по умолчанию
+    current_default = user_data.get(CTX_DEFAULT_QUERY)
+    current_default_mode = user_data.get(CTX_DEFAULT_MODE)
+    is_already_default = (current_default and current_default.lower() == query.lower() and
+                         current_default_mode == mode)
+
+    if not is_already_default:
+        # Сохраняем данные для установки по умолчанию
+        user_data[f"set_default_query_{query_hash}"] = query
+        user_data[f"set_default_mode_{query_hash}"] = mode
+        action_row.append(InlineKeyboardButton("⭐ Установить по умолчанию",
+                                               callback_data=f"set_default_from_schedule_{mode}_{query_hash}"))
+    action_row.append(InlineKeyboardButton("⚙️ Настройки", callback_data=CALLBACK_DATA_SETTINGS_MENU))
+    if action_row:
+        kbd_rows.append(action_row)
 
     # Последняя строка: возврат в начало
     kbd_rows.append([InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)])
@@ -1574,7 +1618,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.inline_query.answer([], cache_time=5, is_personal=True)
         return
 
-    logger.info(f"🔍 [{user_id}] @{username} → Inline поиск: '{query_text[:50]}{'...' if len(query_text) > 50 else ''}'")
+    logger.debug(f"🔍 [{user_id}] @{username} → Inline поиск: '{query_text[:50]}{'...' if len(query_text) > 50 else ''}'")
 
     # Умное определение типа сущности
     entity_type = None
@@ -1621,7 +1665,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.inline_query.answer([], cache_time=5, is_personal=True)
             return
 
-    logger.info(f"✅ [{user_id}] Inline поиск: найдено {len(found)} результатов (тип: {entity_type})")
+    logger.debug(f"✅ [{user_id}] Inline поиск: найдено {len(found)} результатов (тип: {entity_type})")
     today = datetime.date.today().strftime("%Y-%m-%d")
     results = []
     for name in found[:10]:
@@ -1788,7 +1832,7 @@ async def setup_export_process(
 
     # 1. Парсинг данных
     mode, query_hash = parse_export_callback_data(clean_data, prefix)
-    logger.info(f"setup_export_process: data={data}, clean_data={clean_data}, prefix={prefix}, mode={mode}, query_hash={query_hash}")
+    logger.debug(f"setup_export_process: data={data}, clean_data={clean_data}, prefix={prefix}, mode={mode}, query_hash={query_hash}")
     if not mode or not query_hash:
         logger.error(f"setup_export_process: Ошибка парсинга данных - mode={mode}, query_hash={query_hash}")
         await safe_answer_callback_query(update.callback_query, "Ошибка данных", show_alert=True)
@@ -1797,7 +1841,7 @@ async def setup_export_process(
     # 2. Получение имени сущности
     export_key = f"export_{mode}_{query_hash}"
     entity_name = user_data.get(export_key)
-    logger.info(f"setup_export_process: Ищу ключ '{export_key}', найдено: {entity_name}")
+    logger.debug(f"setup_export_process: Ищу ключ '{export_key}', найдено: {entity_name}")
     logger.debug(f"setup_export_process: Доступные ключи export_*: {[k for k in user_data.keys() if k.startswith('export_')]}")
     if not entity_name:
         logger.error(f"setup_export_process: Entity name не найден для ключа '{export_key}'. Доступные ключи: {[k for k in user_data.keys() if 'export' in k.lower()]}")
@@ -1810,11 +1854,11 @@ async def setup_export_process(
         # Принудительно сбрасываем busy флаг, если он остался установленным
         # Это защита от "зависших" флагов после ошибок
         clear_user_busy_state(user_data)
-        logger.info(f"setup_export_process: Busy флаг сброшен, продолжаю экспорт")
+        logger.debug(f"setup_export_process: Busy флаг сброшен, продолжаю экспорт")
 
     # 4. Ответ на callback (блокировку ставим через context manager в вызывающем коде)
     await safe_answer_callback_query(update.callback_query, progress_text)
-    logger.info(f"setup_export_process: Успешно настроен экспорт для {entity_name} (mode={mode}, week_offset={week_offset})")
+    logger.debug(f"setup_export_process: Успешно настроен экспорт для {entity_name} (mode={mode}, week_offset={week_offset})")
 
     return mode, query_hash, entity_name, week_offset, True
 
@@ -1826,7 +1870,7 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
 
     user_id = update.effective_user.id if update.effective_user else "unknown"
     username = update.effective_user.username or "без username" if update.effective_user else "unknown"
-    logger.info(f"📤 [{user_id}] @{username} → Экспорт расписания: неделя (картинка), data: {data[:50]}")
+    logger.debug(f"📤 [{user_id}] @{username} → Экспорт расписания: неделя (картинка), data: {data[:50]}")
 
     # Используем setup_export_process с парсингом недели
     mode, query_hash, entity_name, week_offset, success = await setup_export_process(
@@ -1836,23 +1880,22 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
         logger.error(f"export_week_schedule_image: setup_export_process вернул success=False")
         return
 
-    logger.info(f"export_week_schedule_image: Начинаю экспорт для {entity_name} (mode={mode}, week_offset={week_offset})")
+    logger.debug(f"export_week_schedule_image: Начинаю экспорт для {entity_name} (mode={mode}, week_offset={week_offset})")
 
     # Используем контекстный менеджер для гарантированного снятия блокировки
     user_data = context.user_data
     with user_busy_context(user_data):
         progress = ExportProgress(update.callback_query.message)
         await progress.start("⏳ Подготавливаю расписание...")
-        logger.info(f"export_week_schedule_image: Прогресс запущен")
 
         try:
             entity_type = API_TYPE_TEACHER if mode == MODE_TEACHER else API_TYPE_GROUP
             from .export import get_week_schedule_structured, generate_schedule_image
 
             # Получаем расписание для выбранной недели
-            logger.info(f"export_week_schedule_image: Запрашиваю расписание для {entity_name} (тип: {entity_type}, неделя: {week_offset})")
+            logger.debug(f"export_week_schedule_image: Запрашиваю расписание для {entity_name} (тип: {entity_type}, неделя: {week_offset})")
             week_schedule = await get_week_schedule_structured(entity_name, entity_type, week_offset=week_offset)
-            logger.info(f"export_week_schedule_image: Получено расписание: {len(week_schedule) if week_schedule else 0} дней")
+            logger.debug(f"export_week_schedule_image: Получено расписание: {len(week_schedule) if week_schedule else 0} дней")
 
             # Если week_offset не был указан (0) и на текущей неделе нет пар, проверяем следующую неделю
             if week_offset == 0 and not week_schedule:
@@ -1889,10 +1932,10 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
                 return
 
             await progress.update(60, "🖼 Рисую изображение...")
-            logger.info(f"export_week_schedule_image: Начинаю генерацию изображения")
+            logger.debug(f"export_week_schedule_image: Начинаю генерацию изображения")
             # Генерируем картинку (это может занять время)
             img_bytes = await generate_schedule_image(week_schedule, entity_name, entity_type)
-            logger.info(f"export_week_schedule_image: Изображение сгенерировано: {img_bytes is not None}")
+            logger.debug(f"export_week_schedule_image: Изображение сгенерировано: {img_bytes is not None}")
 
             if img_bytes:
                 entity_label = ENTITY_TEACHER_GENITIVE if mode == MODE_TEACHER else ENTITY_GROUP_GENITIVE
@@ -1914,14 +1957,14 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
                     [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
                 ])
 
-                logger.info(f"export_week_schedule_image: Отправляю изображение пользователю")
+                logger.debug(f"export_week_schedule_image: Отправляю изображение пользователю")
                 try:
                     await update.callback_query.message.reply_photo(
                         photo=img_bytes,
                         caption=f"📅 Расписание на неделю для {entity_label}: {escape_html(entity_name)}",
                         reply_markup=back_kbd
                     )
-                    logger.info(f"export_week_schedule_image: Изображение успешно отправлено")
+                    logger.debug(f"export_week_schedule_image: Изображение успешно отправлено")
                 except Exception as send_error:
                     logger.error(f"export_week_schedule_image: Ошибка при отправке изображения: {send_error}", exc_info=True)
                     try:
@@ -2265,11 +2308,11 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
 
     user_id = update.effective_user.id if update.effective_user else "unknown"
     username = update.effective_user.username or "без username" if update.effective_user else "unknown"
-    logger.info(f"📤 [{user_id}] @{username} → Экспорт семестра (Excel), data: {data[:50]}")
+    logger.debug(f"📤 [{user_id}] @{username} → Экспорт семестра (Excel), data: {data[:50]}")
 
     user_data = context.user_data
     mode, query_hash, semester_option = parse_semester_callback_data(data)
-    logger.info(f"export_semester_excel: data={data}, mode={mode}, query_hash={query_hash}, semester_option={semester_option}")
+    logger.debug(f"export_semester_excel: data={data}, mode={mode}, query_hash={query_hash}, semester_option={semester_option}")
     if not mode or not query_hash:
         logger.error(f"export_semester_excel: Ошибка парсинга данных - mode={mode}, query_hash={query_hash}")
         await safe_answer_callback_query(update.callback_query, "Ошибка данных", show_alert=True)
@@ -2277,7 +2320,7 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
 
     export_key = f"export_{mode}_{query_hash}"
     entity_name = user_data.get(export_key)
-    logger.info(f"export_semester_excel: Ищу ключ '{export_key}', найдено: {entity_name}")
+    logger.debug(f"export_semester_excel: Ищу ключ '{export_key}', найдено: {entity_name}")
     logger.debug(f"export_semester_excel: Доступные ключи export_*: {[k for k in user_data.keys() if k.startswith('export_')]}")
     if not entity_name:
         logger.error(f"export_semester_excel: Entity name не найден для ключа '{export_key}'. Доступные ключи: {[k for k in user_data.keys() if 'export' in k.lower()]}")
@@ -2308,20 +2351,20 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
     await safe_answer_callback_query(update.callback_query, "Готовлю Excel...")
     progress = ExportProgress(update.callback_query.message)
     await progress.start("⏳ Собираю данные семестра...")
-    logger.info(f"export_semester_excel: Начинаю экспорт семестра для {entity_name} (semester_option={semester_option})")
+    logger.debug(f"export_semester_excel: Начинаю экспорт семестра для {entity_name} (semester_option={semester_option})")
 
     # Используем context manager для гарантированного снятия блокировки
     with user_busy_context(user_data):
         try:
             semester_key = None if semester_option == "auto" else semester_option
             start_date, end_date, semester_label = resolve_semester_bounds(semester_key, None, None, None)
-            logger.info(f"export_semester_excel: Семестр: {semester_label}, период: {start_date} - {end_date}")
+            logger.debug(f"export_semester_excel: Семестр: {semester_label}, период: {start_date} - {end_date}")
             await progress.update(20, f"📅 {semester_label}")
 
             entity_type = API_TYPE_GROUP if mode == "student" else API_TYPE_TEACHER
-            logger.info(f"export_semester_excel: Запрашиваю расписание для {entity_name} (тип: {entity_type})")
+            logger.debug(f"export_semester_excel: Запрашиваю расписание для {entity_name} (тип: {entity_type})")
             timetable = await fetch_semester_schedule(entity_name, entity_type, start_date, end_date)
-            logger.info(f"export_semester_excel: Получено расписаний: {len(timetable) if timetable else 0}")
+            logger.debug(f"export_semester_excel: Получено расписаний: {len(timetable) if timetable else 0}")
 
             if not timetable:
                 logger.warning(f"export_semester_excel: Нет расписания для периода")
@@ -2330,11 +2373,11 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
                 return
 
             await progress.update(55, "📘 Формирую Excel...")
-            logger.info(f"export_semester_excel: Начинаю построение Excel")
+            logger.debug(f"export_semester_excel: Начинаю построение Excel")
             workbook, per_group_rows, per_teacher_rows, total_hours, per_group_hours, per_teacher_hours = build_excel_workbook(
                 entity_name, mode, semester_label, timetable
             )
-            logger.info(f"export_semester_excel: Excel построен, всего часов: {total_hours:.1f}")
+            logger.debug(f"export_semester_excel: Excel построен, всего часов: {total_hours:.1f}")
 
             main_buffer = BytesIO()
             workbook.save(main_buffer)
@@ -2360,7 +2403,7 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
             ])
 
             await progress.update(80, "📤 Отправляю файл...")
-            logger.info(f"export_semester_excel: Отправляю Excel файл пользователю")
+            logger.debug(f"export_semester_excel: Отправляю Excel файл пользователю")
             try:
                 await update.callback_query.message.reply_document(
                     document=main_buffer,
@@ -2369,7 +2412,7 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
                     parse_mode=ParseMode.HTML,
                     reply_markup=back_kbd
                 )
-                logger.info(f"export_semester_excel: Excel файл успешно отправлен")
+                logger.debug(f"export_semester_excel: Excel файл успешно отправлен")
             except Exception as send_error:
                 logger.error(f"export_semester_excel: Ошибка при отправке файла: {send_error}", exc_info=True)
                 try:
@@ -2400,7 +2443,7 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
                     )
 
             await progress.finish("✅ Экспорт готов!")
-            logger.info(f"export_semester_excel: Экспорт успешно завершен")
+            logger.debug(f"export_semester_excel: Экспорт успешно завершен")
         except Exception as exc:
             logger.error(f"❌ Ошибка при экспорте семестра: {exc}", exc_info=True)
             try:
@@ -2426,7 +2469,11 @@ async def handle_confirm_mode(update: Update, context: ContextTypes.DEFAULT_TYPE
             # Просто показываем расписание, не устанавливаем default_query
             await handle_schedule_search(update, context, pending_query)
         else:
-            await safe_edit_message_text(update.callback_query, "Ошибка: запрос не найден")
+            error_kbd = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔍 Попробовать снова", callback_data=CALLBACK_DATA_BACK_TO_START)],
+                [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+            ])
+            await safe_edit_message_text(update.callback_query, "Ошибка: запрос не найден. Попробуйте ввести запрос снова.", reply_markup=error_kbd)
 
 async def handle_quick_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     """Быстрый доступ к расписанию по умолчанию"""
@@ -2451,8 +2498,54 @@ async def handle_set_default_mode(update: Update, context: ContextTypes.DEFAULT_
     logger.info(f"⚙️ [{user_id}] @{username} → Настройка {mode_text} по умолчанию")
     user_data[CTX_MODE], user_data[CTX_AWAITING_DEFAULT_QUERY] = mode, True
     prompt = "Теперь отправьте точное название группы:" if mode == MODE_STUDENT else "Теперь отправьте точное ФИО преподавателя:"
-    kbd = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data=CALLBACK_DATA_CANCEL_INPUT)]])
+    kbd = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Отмена", callback_data=CALLBACK_DATA_CANCEL_INPUT)],
+        [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+    ])
     await safe_edit_message_text(update.callback_query, prompt, reply_markup=kbd)
+
+async def handle_set_default_from_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Установка расписания по умолчанию прямо из расписания"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "без username"
+    user_data = context.user_data
+
+    # Парсим данные: "set_default_from_schedule_{mode}_{query_hash}"
+    parts = data.replace("set_default_from_schedule_", "").split("_", 1)
+    if len(parts) != 2:
+        await safe_answer_callback_query(update.callback_query, "Ошибка данных", show_alert=True)
+        return
+
+    mode = parts[0]
+    query_hash = parts[1]
+    query = user_data.get(f"set_default_query_{query_hash}")
+
+    if not query:
+        await safe_answer_callback_query(update.callback_query, "Ошибка: данные не найдены", show_alert=True)
+        return
+
+    mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
+    logger.info(f"⭐ [{user_id}] @{username} → Устанавливает {mode_text} по умолчанию из расписания: '{query}'")
+
+    # Применяем установку по умолчанию
+    await _apply_default_selection(update, context, query, mode, source="schedule")
+
+    # Показываем уведомление
+    await safe_answer_callback_query(
+        update.callback_query,
+        f"✅ {mode_text.capitalize()} '{query}' установлена по умолчанию!",
+        show_alert=False
+    )
+
+    # Обновляем расписание, чтобы скрыть кнопку "Установить по умолчанию"
+    # Восстанавливаем состояние для обновления
+    user_data[CTX_MODE] = mode
+    user_data[CTX_LAST_QUERY] = query
+    if user_data.get(CTX_SCHEDULE_PAGES):
+        await send_schedule_with_pagination(update, context)
+    else:
+        # Если страниц нет, загружаем заново
+        await fetch_and_display_schedule(update, context, query)
 
 async def handle_cancel_input(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     """Обработка отмены ввода"""
@@ -2631,7 +2724,7 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     await safe_edit_message_text(update.callback_query, text, reply_markup=kbd, parse_mode=ParseMode.HTML)
     await safe_answer_callback_query(update.callback_query)
-    logger.info(f"💬 [{user_id}] @{username} → Открыл форму отзыва")
+    logger.debug(f"💬 [{user_id}] @{username} → Открыл форму отзыва")
 
 async def process_feedback_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
     """
@@ -2776,7 +2869,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_answer_callback_query(update.callback_query, maintenance_msg, show_alert=True)
         return
 
-    logger.info(f"🔘 [{user_id}] @{username} → Callback: '{data}'")
+    logger.debug(f"🔘 [{user_id}] @{username} → Callback: '{data}'")
 
     # Проверяем блокировку (оптимизировано)
     if safe_get_user_data(user_data, CTX_IS_BUSY, False) and not data.startswith("cancel"):
@@ -2845,6 +2938,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (CALLBACK_DATA_EXPORT_DAYS_IMAGES, export_days_images),
         (CALLBACK_DATA_EXPORT_SEMESTER, export_semester_excel),
         ("set_default_mode_", handle_set_default_mode),
+        ("set_default_from_schedule_", handle_set_default_from_schedule),
         ("quick_schedule_", handle_quick_schedule),
         ("confirm_mode_", handle_confirm_mode),
         (CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX, handle_notification_open_callback),

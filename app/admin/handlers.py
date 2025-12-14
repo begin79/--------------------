@@ -308,6 +308,14 @@ async def admin_confirm_toggle_callback(update: Update, context: ContextTypes.DE
         if set_bot_status(new_status, updated_by=user_id):
             status_text = "включен" if new_status else "выключен"
             status_emoji = "🟢" if new_status else "🔴"
+            
+            # Логируем действие
+            admin_username = update.effective_user.username or "без username"
+            admin_db.log_admin_action(
+                user_id, admin_username, 
+                "toggle_bot_status", 
+                f"status={status_text}"
+            )
 
             text = (
                 f"{status_emoji} <b>Бот успешно {status_text}!</b>\n\n"
@@ -798,6 +806,14 @@ async def handle_direct_message_input(update: Update, context: ContextTypes.DEFA
 
     context.user_data.pop("awaiting_direct_message", None)
     context.user_data.pop("direct_message_target", None)
+    
+    # Логируем действие
+    admin_db.log_admin_action(
+        admin_id, admin_username,
+        "send_direct_message",
+        f"target_user_id={target_id}, message_length={len(message_text)}",
+        target_user_id=target_id
+    )
 
     confirm_text = (
         f"✅ Сообщение отправлено пользователю <code>{target_id}</code>.\n"
@@ -1051,6 +1067,15 @@ async def handle_admin_id_input(update: Update, context: ContextTypes.DEFAULT_TY
 
         if admin_db.add_admin(new_admin_id, username, added_by):
             context.user_data.pop('awaiting_admin_id', None)
+            
+            # Логируем действие
+            admin_username = update.effective_user.username or "без username"
+            admin_db.log_admin_action(
+                added_by, admin_username,
+                "add_admin",
+                f"new_admin_id={new_admin_id}, username={username}",
+                target_user_id=new_admin_id
+            )
 
             text = (
                 f"✅ <b>Администратор добавлен!</b>\n\n"
@@ -1110,6 +1135,16 @@ async def handle_remove_admin_id_input(update: Update, context: ContextTypes.DEF
             text = "❌ Нельзя удалить главного администратора."
         elif admin_db.remove_admin(admin_id):
             context.user_data.pop('awaiting_remove_admin_id', None)
+            
+            # Логируем действие
+            admin_username = update.effective_user.username or "без username"
+            admin_db.log_admin_action(
+                update.effective_user.id, admin_username,
+                "remove_admin",
+                f"removed_admin_id={admin_id}",
+                target_user_id=admin_id
+            )
+            
             text = f"✅ Администратор {admin_id} удален."
             logger.info(f"Админ {update.effective_user.id} удалил администратора {admin_id}")
         else:

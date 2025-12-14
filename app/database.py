@@ -120,6 +120,18 @@ class UserDatabase:
                 )
             ''')
 
+            # Таблица истории поиска пользователей
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS search_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    query TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            ''')
+
             # Создаем индексы для быстрого поиска
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_activity_user_id ON activity_log(user_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity_log(timestamp)')
@@ -128,6 +140,8 @@ class UserDatabase:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username IS NOT NULL')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON feedback(user_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_search_history_user_id ON search_history(user_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_search_history_created_at ON search_history(created_at)')
 
             conn.commit()
             conn.close()
@@ -473,6 +487,47 @@ class UserDatabase:
         except Exception as e:
             logger.error(f"Ошибка получения последней активности: {e}", exc_info=True)
             return None
+
+    def save_search_history(self, user_id: int, query: str, mode: str):
+        """Сохранить запрос в историю поиска"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                # Удаляем старые записи (оставляем последние 20 для каждого пользователя)
+                cursor.execute('''
+                    DELETE FROM search_history
+                    WHERE user_id = ? AND id NOT IN (
+                        SELECT id FROM search_history
+                        WHERE user_id = ?
+                        ORDER BY created_at DESC
+                        LIMIT 20
+                    )
+                ''', (user_id, user_id))
+                # Добавляем новую запись
+                cursor.execute('''
+                    INSERT INTO search_history (user_id, query, mode, created_at)
+                    VALUES (?, ?, ?, ?)
+                ''', (user_id, query, mode, datetime.now().isoformat()))
+        except Exception as e:
+            logger.error(f"Ошибка сохранения истории поиска: {e}", exc_info=True)
+
+    def get_search_history(self, user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+        """Получить историю поиска пользователя"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT query, mode, created_at
+                    FROM search_history
+                    WHERE user_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                ''', (user_id, limit))
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка получения истории поиска: {e}", exc_info=True)
+            return []
 
 # Глобальный экземпляр базы данных
 db = UserDatabase()

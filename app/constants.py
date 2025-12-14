@@ -43,6 +43,7 @@ class CallbackData(str, Enum):
     HELP_COMMAND_INLINE = "help_command_inline"
     BACK_TO_SCHEDULE = "back_to_schedule_from_export"
     FEEDBACK = "feedback"
+    SET_DEFAULT_FROM_SCHEDULE = "set_default_from_schedule"
 
 # Префиксы для callback data
 class CallbackPrefix(str, Enum):

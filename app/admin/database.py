@@ -132,6 +132,23 @@ class AdminDatabase:
 
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_schedule_snapshots_updated ON schedule_snapshots(updated_at)')
 
+            # Таблица для логирования действий администраторов
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS admin_actions_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id INTEGER NOT NULL,
+                    admin_username TEXT,
+                    action TEXT NOT NULL,
+                    details TEXT,
+                    target_user_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (admin_id) REFERENCES admins(user_id)
+                )
+            ''')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_admin_actions_admin ON admin_actions_log(admin_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_admin_actions_created ON admin_actions_log(created_at)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_admin_actions_action ON admin_actions_log(action)')
+
             conn.commit()
             conn.close()
             logger.info("Админские таблицы инициализированы")
@@ -308,6 +325,44 @@ class AdminDatabase:
         except Exception as e:
             logger.error(f"Ошибка получения snapshot расписания {cache_key}: {e}", exc_info=True)
             return None
+
+    def log_admin_action(self, admin_id: int, admin_username: Optional[str], action: str,
+                        details: Optional[str] = None, target_user_id: Optional[int] = None):
+        """Логирование действий администратора"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO admin_actions_log (admin_id, admin_username, action, details, target_user_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (admin_id, admin_username, action, details, target_user_id, datetime.now().isoformat()))
+                logger.debug(f"Записано действие админа {admin_id}: {action}")
+        except Exception as e:
+            logger.error(f"Ошибка логирования действия админа: {e}", exc_info=True)
+
+    def get_admin_actions_log(self, limit: int = 100, admin_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Получить лог действий администраторов"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                if admin_id:
+                    cursor.execute('''
+                        SELECT * FROM admin_actions_log
+                        WHERE admin_id = ?
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                    ''', (admin_id, limit))
+                else:
+                    cursor.execute('''
+                        SELECT * FROM admin_actions_log
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                    ''', (limit,))
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка получения лога действий админов: {e}", exc_info=True)
+            return []
 
     def save_schedule_snapshot(self, cache_key: str, schedule_hash: str):
         """Сохранить хеш расписания в БД"""
