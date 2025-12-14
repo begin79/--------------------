@@ -1303,7 +1303,6 @@ async def send_schedule_with_pagination(update: Update, context: ContextTypes.DE
         username = update.effective_user.username or "без username"
         logger.debug(f"📋 [{user_id}] @{username} → Отображение расписания '{query}' (страница {idx + 1}/{len(pages)})")  # Изменено с INFO на DEBUG
 
-    entity = ENTITY_GROUP_GENITIVE if mode == MODE_STUDENT else ENTITY_TEACHER_GENITIVE
     # Улучшенное форматирование расписания (убрано дублирование)
     section_emoji = "🎓" if mode == MODE_STUDENT else "🧑‍🏫"
     entity_text = "группы" if mode == MODE_STUDENT else "преподавателя"
