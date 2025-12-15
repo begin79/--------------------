@@ -75,10 +75,8 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
     username = update.effective_user.username or "без username"
     user_data = context.user_data
 
-    # Устанавливаем блокировку
-    set_user_busy(user_data, True)
-
-    try:
+    # Используем context manager для автоматического управления блокировкой
+    with user_busy_context(user_data):
         if not user_data.get(CTX_MODE):
             logger.warning(f"⚠️ [{user_id}] @{username} → Попытка поиска без выбора режима")
             await update.message.reply_text("Сначала выберите режим через /start.")
@@ -165,9 +163,6 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
                 msg,
                 reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True, one_time_keyboard=True)
             )
-    finally:
-        # Снимаем блокировку
-        set_user_busy(user_data, False)
 
 
 async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str, msg_to_edit: Optional[Message] = None):
@@ -179,10 +174,8 @@ async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAU
     username = update.effective_user.username or "без username"
     user_data = context.user_data
 
-    # Устанавливаем блокировку
-    set_user_busy(user_data, True)
-
-    try:
+    # Используем context manager для автоматического управления блокировкой
+    with user_busy_context(user_data):
         mode = user_data.get(CTX_MODE)
         api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
         date = user_data.setdefault(CTX_SELECTED_DATE, datetime.date.today().strftime("%Y-%m-%d"))
@@ -233,9 +226,6 @@ async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAU
 
         # Логируем активность
         db.log_activity(user_id, "view_schedule", f"mode={mode}, query={query}, date={date}")
-    finally:
-        # Снимаем блокировку
-        set_user_busy(user_data, False)
 
 
 async def send_schedule_with_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE, msg_to_edit: Optional[Message] = None):

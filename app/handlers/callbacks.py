@@ -267,7 +267,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     from ..schedule import search_entities
     from ..utils import escape_html
     from .schedule import safe_get_schedule
-    
+
     user_id = update.inline_query.from_user.id
 
     # Проверяем статус бота (кроме админов)
@@ -456,15 +456,21 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data in HANDLERS:
         handler = HANDLERS[data]
         try:
-            # Устанавливаем флаг занятости для длительных операций
+            # Используем context manager для длительных операций
             if data not in [CALLBACK_DATA_CANCEL_INPUT, CALLBACK_DATA_BACK_TO_START]:
-                set_user_busy(user_data, True)
-
-            try:
-                await handler(update, context, data)
-            except TypeError:
-                # Если функция принимает только 2 аргумента
-                await handler(update, context)
+                with user_busy_context(user_data):
+                    try:
+                        await handler(update, context, data)
+                    except TypeError:
+                        # Если функция принимает только 2 аргумента
+                        await handler(update, context)
+            else:
+                # Для быстрых операций не используем блокировку
+                try:
+                    await handler(update, context, data)
+                except TypeError:
+                    # Если функция принимает только 2 аргумента
+                    await handler(update, context)
         except Exception as e:
             user_id = update.effective_user.id if update.effective_user else "unknown"
             logger.error(f"❌ Ошибка в обработчике callback '{data}' для пользователя {user_id}: {e}", exc_info=True)
@@ -477,8 +483,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as answer_error:
                 logger.error(f"Ошибка при ответе на callback query: {answer_error}")
             clear_temporary_states(user_data)
-        finally:
-            # Всегда очищаем флаг занятости
+            # Убеждаемся, что блокировка снята
             clear_user_busy_state(user_data)
         return
 
@@ -509,14 +514,13 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for prefix, handler in PREFIXES:
         if data.startswith(prefix):
             try:
-                # Устанавливаем флаг занятости
-                set_user_busy(user_data, True)
-
-                try:
-                    await handler(update, context, data)
-                except TypeError:
-                    # Если функция принимает только 2 аргумента
-                    await handler(update, context)
+                # Используем context manager для автоматического управления блокировкой
+                with user_busy_context(user_data):
+                    try:
+                        await handler(update, context, data)
+                    except TypeError:
+                        # Если функция принимает только 2 аргумента
+                        await handler(update, context)
             except Exception as e:
                 user_id = update.effective_user.id if update.effective_user else "unknown"
                 logger.error(f"❌ Ошибка в обработчике префикса '{prefix}' (callback: '{data[:50]}...') для пользователя {user_id}: {e}", exc_info=True)
@@ -529,8 +533,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as answer_error:
                     logger.error(f"Ошибка при ответе на callback query: {answer_error}")
                 clear_temporary_states(user_data)
-            finally:
-                # Всегда очищаем флаг занятости
+                # Убеждаемся, что блокировка снята
                 clear_user_busy_state(user_data)
             return
 

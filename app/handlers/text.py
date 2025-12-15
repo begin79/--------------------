@@ -49,7 +49,7 @@ async def _apply_default_selection(
         DEFAULT_NOTIFICATION_TIME
     )
     from .utils import save_user_data_to_db, get_default_reply_keyboard
-    
+
     user_data = context.user_data
     user_id = update.effective_user.id if update.effective_user else None
     username = update.effective_user.username if update.effective_user else None
@@ -319,7 +319,7 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
         CALLBACK_DATA_BACK_TO_START
     )
     from .utils import safe_answer_callback_query
-    
+
     if not update.effective_user:
         logger.error("handle_default_query_input вызван без effective_user")
         return
@@ -335,10 +335,8 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
         await settings_menu_callback(update, context)
         return
 
-    # Устанавливаем блокировку
-    set_user_busy(user_data, True)
-
-    try:
+    # Используем context manager для автоматического управления блокировкой
+    with user_busy_context(user_data):
         mode = user_data[CTX_MODE]
         mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
         logger.info(f"⚙️ [{user_id}] @{username} → Устанавливает {mode_text} по умолчанию: '{text}'")
@@ -399,15 +397,12 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
             hint,
             reply_markup=ReplyKeyboardMarkup(option_rows, resize_keyboard=True, one_time_keyboard=True)
         )
-    finally:
-        # Снимаем блокировку
-        set_user_busy(user_data, False)
 
 
 async def handle_manual_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     from ..constants import CTX_SELECTED_DATE, CTX_AWAITING_MANUAL_DATE, CTX_MODE, CTX_LAST_QUERY, CALLBACK_DATA_CANCEL_INPUT, CALLBACK_DATA_BACK_TO_START
     from .schedule import fetch_and_display_schedule
-    
+
     user_data = context.user_data
     # Устанавливаем стандартную клавиатуру
     reply_keyboard = get_default_reply_keyboard()
@@ -437,7 +432,7 @@ async def handle_quick_date_callback(update: Update, context: ContextTypes.DEFAU
     )
     from .start import start_command
     from .schedule import safe_get_schedule, send_schedule_with_pagination
-    
+
     user_data = context.user_data
 
     # Определяем дату
@@ -485,8 +480,7 @@ async def handle_quick_date_callback(update: Update, context: ContextTypes.DEFAU
 
     # Загружаем расписание
     api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
-    set_user_busy(user_data, True)
-    try:
+    with user_busy_context(user_data):
         pages, err = await safe_get_schedule(date.strftime("%Y-%m-%d"), query, api_type)
         if err or not pages:
             await update.callback_query.message.reply_text(
@@ -498,6 +492,4 @@ async def handle_quick_date_callback(update: Update, context: ContextTypes.DEFAU
         user_data[CTX_SCHEDULE_PAGES] = pages
         user_data[CTX_CURRENT_PAGE_INDEX] = 0
         await send_schedule_with_pagination(update, context)
-    finally:
-        set_user_busy(user_data, False)
 

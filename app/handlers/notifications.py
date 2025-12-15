@@ -195,9 +195,9 @@ async def handle_notification_open_callback(update: Update, context: ContextType
     await safe_answer_callback_query(update.callback_query, "📅 Загружаю расписание...")
 
     from .schedule import safe_get_schedule, send_schedule_with_pagination
+    from .utils import user_busy_context
 
-    set_user_busy(user_data, True)
-    try:
+    with user_busy_context(user_data):
         pages, err = await safe_get_schedule(date_str, query, api_type)
         if err or not pages:
             await update.callback_query.message.reply_text(
@@ -209,6 +209,4 @@ async def handle_notification_open_callback(update: Update, context: ContextType
         user_data[CTX_SCHEDULE_PAGES] = pages
         user_data[CTX_CURRENT_PAGE_INDEX] = 0
         await send_schedule_with_pagination(update, context)
-    finally:
-        set_user_busy(user_data, False)
 
