@@ -177,7 +177,7 @@ def load_user_data_from_db(user_id: int, user_data: dict):
     )
     import logging
     logger = logging.getLogger(__name__)
-    
+
     try:
         user_db = db.get_user(user_id)
         if user_db:
@@ -203,7 +203,7 @@ def save_user_data_to_db(user_id: int, username: str, first_name: str, last_name
     )
     import logging
     logger = logging.getLogger(__name__)
-    
+
     try:
         # 1. Получаем текущее состояние
         existing = db.get_user(user_id)

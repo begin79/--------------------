@@ -194,11 +194,7 @@ async def handle_notification_open_callback(update: Update, context: ContextType
 
     await safe_answer_callback_query(update.callback_query, "📅 Загружаю расписание...")
 
-    # Временно импортируем из handlers.py до создания schedule.py
-    try:
-        from .schedule import safe_get_schedule, send_schedule_with_pagination
-    except ImportError:
-        from ..handlers import safe_get_schedule, send_schedule_with_pagination
+    from .schedule import safe_get_schedule, send_schedule_with_pagination
 
     set_user_busy(user_data, True)
     try:
