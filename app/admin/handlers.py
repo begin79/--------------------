@@ -308,12 +308,12 @@ async def admin_confirm_toggle_callback(update: Update, context: ContextTypes.DE
         if set_bot_status(new_status, updated_by=user_id):
             status_text = "включен" if new_status else "выключен"
             status_emoji = "🟢" if new_status else "🔴"
-            
+
             # Логируем действие
             admin_username = update.effective_user.username or "без username"
             admin_db.log_admin_action(
-                user_id, admin_username, 
-                "toggle_bot_status", 
+                user_id, admin_username,
+                "toggle_bot_status",
                 f"status={status_text}"
             )
 
@@ -806,7 +806,7 @@ async def handle_direct_message_input(update: Update, context: ContextTypes.DEFA
 
     context.user_data.pop("awaiting_direct_message", None)
     context.user_data.pop("direct_message_target", None)
-    
+
     # Логируем действие
     admin_db.log_admin_action(
         admin_id, admin_username,
@@ -1067,7 +1067,7 @@ async def handle_admin_id_input(update: Update, context: ContextTypes.DEFAULT_TY
 
         if admin_db.add_admin(new_admin_id, username, added_by):
             context.user_data.pop('awaiting_admin_id', None)
-            
+
             # Логируем действие
             admin_username = update.effective_user.username or "без username"
             admin_db.log_admin_action(
@@ -1135,7 +1135,7 @@ async def handle_remove_admin_id_input(update: Update, context: ContextTypes.DEF
             text = "❌ Нельзя удалить главного администратора."
         elif admin_db.remove_admin(admin_id):
             context.user_data.pop('awaiting_remove_admin_id', None)
-            
+
             # Логируем действие
             admin_username = update.effective_user.username or "без username"
             admin_db.log_admin_action(
@@ -1144,7 +1144,7 @@ async def handle_remove_admin_id_input(update: Update, context: ContextTypes.DEF
                 f"removed_admin_id={admin_id}",
                 target_user_id=admin_id
             )
-            
+
             text = f"✅ Администратор {admin_id} удален."
             logger.info(f"Админ {update.effective_user.id} удалил администратора {admin_id}")
         else:
@@ -1386,53 +1386,44 @@ async def admin_feedback_list_callback(update: Update, context: ContextTypes.DEF
             [InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_ADMIN_FEEDBACK)],
         ])
     else:
-        text_lines = [f"📋 <b>Отзывы</b> (стр. {page + 1}/{total_pages if total_pages > 0 else 1})\n"]
+        # Компактный заголовок
+        text = f"📋 <b>Отзывы</b> (стр. {page + 1}/{total_pages if total_pages > 0 else 1})\n\n"
+        text += "Нажмите на кнопку ниже, чтобы просмотреть детали отзыва:\n"
 
+        # Кнопки навигации - компактный формат
+        kbd_rows = []
         for idx, feedback in enumerate(page_feedback, start=start_idx + 1):
             feedback_id = feedback.get('id')
             user_id = feedback.get('user_id')
             username = feedback.get('username') or 'без username'
             first_name = feedback.get('first_name') or 'Без имени'
-            message = feedback.get('message', '')
             created_at = feedback.get('created_at', '')
-
-            # Форматируем дату
+            is_read = feedback.get('is_read', False)
+            
+            # Форматируем дату (только дата, без времени для компактности)
             try:
                 if isinstance(created_at, str):
                     dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
                 else:
                     dt = created_at
-                date_str = dt.strftime('%d.%m.%Y %H:%M')
+                date_str = dt.strftime('%d.%m.%Y')
             except:
-                date_str = str(created_at)[:16]
-
-            # Обрезаем сообщение для списка
-            message_preview = message[:60] + "..." if len(message) > 60 else message
-            is_read = feedback.get('is_read', False)
+                date_str = str(created_at)[:10] if len(str(created_at)) > 10 else str(created_at)
+            
             read_marker = "✅" if is_read else "🆕"
-
-            text_lines.append(
-                f"{read_marker} <b>#{idx}</b> | {date_str}\n"
-                f"👤 {escape_html(first_name)} (@{escape_html(username)})\n"
-                f"💬 {escape_html(message_preview)}\n"
-            )
-
-        text = "\n".join(text_lines)
-
-        # Кнопки навигации
-        kbd_rows = []
-        for feedback in page_feedback:
-            feedback_id = feedback.get('id')
-            user_id = feedback.get('user_id')
-            username = feedback.get('username') or 'без username'
-            first_name = feedback.get('first_name') or 'Без имени'
-            message_preview = feedback.get('message', '')[:30] + "..." if len(feedback.get('message', '')) > 30 else feedback.get('message', '')
-            is_read = feedback.get('is_read', False)
-            read_marker = "✅" if is_read else "🆕"
-
+            
+            # Компактная кнопка: маркер, номер, имя, дата
+            # Ограничиваем длину имени для компактности
+            name_display = first_name[:12] + "..." if len(first_name) > 12 else first_name
+            button_text = f"{read_marker} #{idx} {name_display} ({date_str})"
+            
+            # Ограничиваем длину кнопки (Telegram лимит ~64 символа)
+            if len(button_text) > 60:
+                button_text = f"{read_marker} #{idx} {name_display[:8]} ({date_str})"
+            
             kbd_rows.append([
                 InlineKeyboardButton(
-                    f"{read_marker} {escape_html(first_name)} - {escape_html(message_preview)}",
+                    button_text,
                     callback_data=f"{CALLBACK_ADMIN_FEEDBACK_DETAILS_PREFIX}{feedback_id}"
                 )
             ])
