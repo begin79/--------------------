@@ -15,8 +15,8 @@ except ImportError:
 from .handlers.start import start_command
 from .handlers.help import help_command_handler
 from .handlers.settings import settings_menu_callback
-# Временно импортируем из старого handlers.py до завершения рефакторинга
-from .handlers import handle_text_message, callback_router
+from .handlers.text import handle_text_message
+from .handlers.callbacks import callback_router, inline_query_handler
 from .jobs import check_schedule_changes_job
 from .http import close_http_client
 from .admin.database import admin_db
@@ -380,7 +380,6 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(callback_router))
     app.add_error_handler(error_handler)
     # Inline режим (поиск через @username)
-    from .handlers import inline_query_handler
     app.add_handler(InlineQueryHandler(inline_query_handler))
 
     if app.job_queue:
