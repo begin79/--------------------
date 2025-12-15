@@ -137,7 +137,7 @@ async def _handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Обрабатывает ответ администратору. Возвращает True если сообщение обработано."""
     user_data = context.user_data
     user_id = update.effective_user.id
-    
+
     pending_admin_id = safe_get_user_data(user_data, "pending_admin_reply")
     if not pending_admin_id:
         reply_states = get_admin_reply_states(context)
@@ -178,7 +178,7 @@ async def _handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE, t
 async def _handle_commands(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
     """Обрабатывает команды. Возвращает True если сообщение обработано."""
     user_data = context.user_data
-    
+
     # Команда /start или "Старт"
     if text == "/start" or text.startswith("/start") or text.strip().lower() == "старт":
         try:
@@ -208,14 +208,14 @@ async def _handle_commands(update: Update, context: ContextTypes.DEFAULT_TYPE, t
             await update.message.reply_text("❌ Произошла ошибка. Попробуйте команду /start ещё раз.")
             clear_temporary_states(user_data)
         return True
-    
+
     return False
 
 
 async def _handle_cold_start(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
     """Обрабатывает умный холодный старт. Возвращает True если сообщение обработано."""
     user_data = context.user_data
-    
+
     # Умный холодный старт: если режим не выбран, пытаемся определить по тексту
     if not safe_get_user_data(user_data, CTX_MODE) and not safe_get_user_data(user_data, CTX_AWAITING_DEFAULT_QUERY) and not safe_get_user_data(user_data, CTX_AWAITING_MANUAL_DATE):
         # Проверяем, есть ли у пользователя установленная группа/преподаватель
@@ -270,14 +270,14 @@ async def _handle_cold_start(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 reply_markup=keyboard
             )
             return True
-    
+
     return False
 
 
 async def _handle_input_states(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
     """Обрабатывает состояния ожидания ввода. Возвращает True если сообщение обработано."""
     user_data = context.user_data
-    
+
     if safe_get_user_data(user_data, CTX_AWAITING_DEFAULT_QUERY):
         try:
             await handle_default_query_input(update, context, text)
@@ -294,7 +294,7 @@ async def _handle_input_states(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("❌ Произошла ошибка при обработке даты.")
             clear_temporary_states(user_data)
         return True
-    
+
     return False
 
 

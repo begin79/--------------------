@@ -953,16 +953,7 @@ async def admin_cache_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         schedule_cache.clear()
         list_cache.clear()
 
-        # Очищаем кеш фотографий преподавателей (если модуль доступен)
-        try:
-            from ..teacher_photo import teacher_photo_cache, teacher_profile_cache
-            teacher_photo_cache.clear()
-            teacher_profile_cache.clear()
-        except ImportError:
-            # Модуль teacher_photo не используется, пропускаем
-            pass
-        except Exception as e:
-            logger.debug(f"Ошибка при очистке кеша фотографий: {e}", exc_info=True)
+        # Кеш фотографий преподавателей больше не используется
 
         text = (
             f"✅ <b>Кеш очищен!</b>\n\n"
