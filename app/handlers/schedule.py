@@ -25,7 +25,7 @@ from ..constants import (
 from ..utils import escape_html
 from ..schedule import get_schedule, search_entities
 from ..database import db
-from .utils import safe_edit_message_text, safe_answer_callback_query, get_default_reply_keyboard, user_busy_context
+from .utils import safe_edit_message_text, get_default_reply_keyboard, user_busy_context
 
 logger = logging.getLogger(__name__)
 
@@ -128,13 +128,13 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
             user_data.pop(CTX_FOUND_ENTITIES, None)
             # Улучшенное сообщение об ошибке с примерами
             error_text = f"❌ <b>{not_found}</b>\n\n"
-            error_text += f"💡 <b>Попробуйте:</b>\n"
+            error_text += "💡 <b>Попробуйте:</b>\n"
             error_text += f"   • Ввести первые 3-4 буквы: <code>{text[:4] if len(text) >= 4 else text}</code>\n"
             if mode == MODE_STUDENT:
-                error_text += f"   • Проверить формат: <code>ИС1-231-ОТ</code>\n"
+                error_text += "   • Проверить формат: <code>ИС1-231-ОТ</code>\n"
             else:
-                error_text += f"   • Ввести фамилию: <code>Иванов</code>\n"
-            error_text += f"   • Использовать точное название"
+                error_text += "   • Ввести фамилию: <code>Иванов</code>\n"
+            error_text += "   • Использовать точное название"
             # Устанавливаем стандартную клавиатуру
             reply_keyboard = get_default_reply_keyboard()
             error_kbd = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]])
@@ -359,7 +359,12 @@ async def schedule_navigation_callback(update: Update, context: ContextTypes.DEF
         if action + "_" == CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX:
             logger.info(f"🔄 [{user_id}] @{username} → Обновление расписания")
             await query_obj.answer("🔄 Обновляю...")
-            await fetch_and_display_schedule(update, context, context.user_data[CTX_LAST_QUERY])
+            last_query = context.user_data.get(CTX_LAST_QUERY) or context.user_data.get(CTX_DEFAULT_QUERY)
+            if not last_query:
+                logger.warning(f"⚠️ [{user_id}] @{username} → Обновление без сохраненного запроса")
+                await query_obj.answer("Не найден предыдущий запрос. Введите группу или преподавателя заново.", show_alert=True)
+                return
+            await fetch_and_display_schedule(update, context, last_query)
         else:
             page_num = int(page_str)
             direction = "← Назад" if action == "prev" else "→ Вперед"

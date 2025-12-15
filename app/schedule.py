@@ -428,17 +428,23 @@ async def search_entities(query: str, entity_type: Literal["Group", "Teacher"]) 
     try:
         response = await make_request_with_retry(url, list_cache)
 
-        # Проверяем Content-Type заголовка
-        content_type = response.headers.get('Content-Type', '')
-        if 'application/json' not in content_type and 'text/json' not in content_type:
-            logger.warning(f"Неожиданный Content-Type: {content_type}")
+        # Проверяем Content-Type заголовка, но не прерываем выполнение, если он не json
+        content_type = response.headers.get('Content-Type', '') or ''
+        content_type_lower = content_type.lower()
+        is_json_content_type = 'application/json' in content_type_lower or 'text/json' in content_type_lower
 
-        # Пытаемся получить JSON
+        # Пытаемся получить JSON вне зависимости от заголовка
         try:
             entities = response.json()
         except ValueError as e:
-            logger.error(f"Ошибка парсинга JSON: {e}, response text: {response.text[:200]}")
+            logger.error(
+                f"Ошибка парсинга JSON: {e}, content-type: '{content_type}', response text: {response.text[:200]}"
+            )
             return None, "Ошибка: Сервер вернул данные в неожиданном формате."
+
+        # Если заголовок неожиданный, но JSON успешно распаршен, логируем на уровне INFO без прерывания
+        if not is_json_content_type:
+            logger.info(f"Неожиданный Content-Type (но JSON получен): '{content_type}'")
 
         # Проверяем тип данных
         if not isinstance(entities, list):
