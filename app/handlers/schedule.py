@@ -25,8 +25,7 @@ from ..constants import (
 from ..utils import escape_html
 from ..schedule import get_schedule, search_entities
 from ..database import db
-from ..state_manager import set_user_busy
-from .utils import safe_edit_message_text, safe_answer_callback_query, get_default_reply_keyboard
+from .utils import safe_edit_message_text, safe_answer_callback_query, get_default_reply_keyboard, user_busy_context
 
 logger = logging.getLogger(__name__)
 
