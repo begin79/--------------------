@@ -527,9 +527,17 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
     # Используем context manager для гарантированного снятия блокировки
     progress = ExportProgress(update.callback_query.message)
-    await progress.start("⏳ Подготавливаю изображения по дням...")
+    logger.info(f"Создан ExportProgress, начинаю start...")
+    try:
+        await progress.start("⏳ Подготавливаю изображения по дням...")
+        logger.info(f"progress.start завершен успешно")
+    except Exception as progress_error:
+        logger.error(f"Ошибка при progress.start: {progress_error}", exc_info=True)
+        # Продолжаем выполнение даже если прогресс не запустился
 
+    logger.info(f"Вхожу в user_busy_context...")
     with user_busy_context(user_data):
+        logger.info(f"Внутри user_busy_context, начинаю обработку...")
         try:
             entity_type = API_TYPE_TEACHER if mode == MODE_TEACHER else API_TYPE_GROUP
             from ..export import get_week_schedule_structured, generate_day_schedule_image
@@ -552,7 +560,7 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
             except Exception as e:
                 logger.error(f"Ошибка при получении расписания на неделю: {e}", exc_info=True)
                 week_schedule = {}
-            
+
             logger.info(f"Получено расписание на неделю: {len(week_schedule)} дней с парами (неделя с {monday.strftime('%d.%m.%Y')})")
 
             weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"]
@@ -682,12 +690,14 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
             logger.error(f"❌ Ошибка при генерации картинок по дням: {e}", exc_info=True)
             try:
                 await update.callback_query.message.reply_text("❌ Произошла ошибка при генерации картинок. Попробуйте позже.")
-            except Exception as e:
-                logger.debug(f"Ошибка при отправке сообщения: {e}", exc_info=True)
+            except Exception as reply_error:
+                logger.debug(f"Ошибка при отправке сообщения: {reply_error}", exc_info=True)
             try:
                 await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
-            except Exception as e:
-                logger.debug(f"Ошибка при завершении прогресса: {e}", exc_info=True)
+            except Exception as finish_error:
+                logger.debug(f"Ошибка при завершении прогресса: {finish_error}", exc_info=True)
+        finally:
+            logger.info(f"Завершение export_days_images, блокировка будет снята автоматически")
 
 
 async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
