@@ -84,13 +84,7 @@ async def process_feedback_message(update: Update, context: ContextTypes.DEFAULT
         return True
 
     # Сохраняем отзыв
-    db.save_feedback(
-        user_id=user_id,
-        username=username,
-        first_name=first_name,
-        last_name=update.effective_user.last_name,
-        message=text
-    )
+    db.save_feedback(user_id, text, username, first_name)
 
     db.log_activity(user_id, "feedback_sent", f"length={len(text)}")
 
