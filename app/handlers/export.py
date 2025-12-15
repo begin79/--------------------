@@ -476,11 +476,14 @@ async def export_week_schedule_file(update: Update, context: ContextTypes.DEFAUL
 
 async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     """Экспорт расписания по дням (отдельные картинки для каждого дня)"""
+    logger.info(f"🚀 export_days_images вызвана с data='{data}'")
+
     if not update.callback_query:
+        logger.error("❌ export_days_images: update.callback_query отсутствует")
         return
 
-    user_id = update.effective_user.id
-    username = update.effective_user.username or "без username"
+    user_id = update.effective_user.id if update.effective_user else "unknown"
+    username = update.effective_user.username or "без username" if update.effective_user else "unknown"
     logger.info(f"📤 [{user_id}] @{username} → Экспорт расписания: по дням (картинки)")
 
     # Парсим callback data: "export_days_images_{mode}_{query_hash}"
@@ -523,181 +526,208 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
 
     # Отвечаем на callback сразу
-    await safe_answer_callback_query(update.callback_query, "Генерирую картинки по дням...")
+    try:
+        await safe_answer_callback_query(update.callback_query, "Генерирую картинки по дням...")
+        logger.info(f"✅ Callback query ответ отправлен")
+    except Exception as answer_error:
+        logger.error(f"Ошибка при ответе на callback query: {answer_error}", exc_info=True)
+        # Продолжаем выполнение
 
     # Используем context manager для гарантированного снятия блокировки
-    progress = ExportProgress(update.callback_query.message)
-    logger.info(f"Создан ExportProgress, начинаю start...")
     try:
-        await progress.start("⏳ Подготавливаю изображения по дням...")
-        logger.info(f"progress.start завершен успешно")
-    except Exception as progress_error:
-        logger.error(f"Ошибка при progress.start: {progress_error}", exc_info=True)
-        # Продолжаем выполнение даже если прогресс не запустился
-
-    logger.info(f"Вхожу в user_busy_context...")
-    with user_busy_context(user_data):
-        logger.info(f"Внутри user_busy_context, начинаю обработку...")
+        progress = ExportProgress(update.callback_query.message)
+        logger.info(f"✅ Создан ExportProgress, начинаю start...")
         try:
-            entity_type = API_TYPE_TEACHER if mode == MODE_TEACHER else API_TYPE_GROUP
-            from ..export import get_week_schedule_structured, generate_day_schedule_image
-            from ..schedule import get_schedule_structured
+            await progress.start("⏳ Подготавливаю изображения по дням...")
+            logger.info(f"✅ progress.start завершен успешно")
+        except Exception as progress_error:
+            logger.error(f"❌ Ошибка при progress.start: {progress_error}", exc_info=True)
+            # Продолжаем выполнение даже если прогресс не запустился
+            progress = None
+    except Exception as progress_init_error:
+        logger.error(f"❌ Ошибка при создании ExportProgress: {progress_init_error}", exc_info=True)
+        progress = None
 
-            # Используем ту же логику, что и в get_week_schedule_structured
-            today = datetime.date.today()
-            days_since_monday = today.weekday()
-            if days_since_monday == 6:  # Воскресенье
-                monday = today + datetime.timedelta(days=1)
-            else:
-                monday = today - datetime.timedelta(days=days_since_monday)
+    logger.info(f"✅ Вхожу в user_busy_context...")
+    # Импорты вынесены в начало функции для избежания проблем с областью видимости
+    from ..export import get_week_schedule_structured, generate_day_schedule_image
+    from ..schedule import get_schedule_structured
 
-            logger.info(f"Запрашиваю расписание на неделю для {entity_name} (тип: {entity_type}, неделя с {monday.strftime('%d.%m.%Y')})")
+    try:
+        with user_busy_context(user_data):
+            logger.info(f"✅ Внутри user_busy_context, начинаю обработку...")
             try:
-                week_schedule = await get_week_schedule_structured(entity_name, entity_type, start_date=today)
-                if not week_schedule:
-                    logger.warning(f"get_week_schedule_structured вернул пустой результат для {entity_name}")
-                    week_schedule = {}
-            except Exception as e:
-                logger.error(f"Ошибка при получении расписания на неделю: {e}", exc_info=True)
-                week_schedule = {}
+                entity_type = API_TYPE_TEACHER if mode == MODE_TEACHER else API_TYPE_GROUP
 
-            logger.info(f"Получено расписание на неделю: {len(week_schedule)} дней с парами (неделя с {monday.strftime('%d.%m.%Y')})")
-
-            weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"]
-            entity_label = ENTITY_TEACHER_GENITIVE if mode == MODE_TEACHER else ENTITY_GROUP_GENITIVE
-
-            # Сначала определяем, сколько дней с парами будет
-            # Но мы будем проверять каждый день индивидуально через get_schedule_structured
-            # так как week_schedule может быть неполным
-            logger.info(f"Начинаю генерацию картинок для недели с {monday.strftime('%d.%m.%Y')}")
-
-            # Собираем все картинки и подписи
-            media_group = []
-            generated_count = 0
-            total_days_to_check = 6  # Пн-Сб
-
-            logger.info(f"Начинаю обработку {total_days_to_check} дней недели")
-            for day_offset in range(total_days_to_check):  # Пн-Сб
-                current_date = monday + datetime.timedelta(days=day_offset)
-                date_str = current_date.strftime("%Y-%m-%d")
-                weekday_name = weekdays[day_offset]
-
-                logger.info(f"Обрабатываю день {date_str} ({weekday_name})")
-                await progress.update(int((day_offset / total_days_to_check) * 50), f"📅 Проверяю {weekday_name}...")
-
-                # Получаем структурированное расписание для дня
-                try:
-                    day_schedule, err = await get_schedule_structured(date_str, entity_name, entity_type)
-                    if err:
-                        logger.warning(f"Не удалось получить расписание для {date_str}: {err}")
-                        continue
-                    if not day_schedule:
-                        logger.debug(f"День {date_str}: пустое расписание, пропускаем")
-                        continue
-                except Exception as schedule_error:
-                    logger.error(f"Ошибка при получении расписания для {date_str}: {schedule_error}", exc_info=True)
-                    continue
-
-                # Проверяем, есть ли пары в структурированном расписании
-                day_pairs = day_schedule.get("pairs", [])
-                if not day_pairs:
-                    logger.debug(f"День {date_str}: нет пар в структурированном расписании, пропускаем")
-                    continue
-
-                logger.info(f"День {date_str}: найдено {len(day_pairs)} пар, генерирую картинку...")
-                try:
-                    img_bytes = await generate_day_schedule_image(day_schedule, entity_name, entity_type)
-                    if img_bytes:
-                        logger.info(f"✅ Картинка для {date_str} успешно сгенерирована")
-                    else:
-                        logger.warning(f"generate_day_schedule_image вернул None для {date_str}")
-                except Exception as img_error:
-                    logger.error(f"Ошибка при генерации картинки для {date_str}: {img_error}", exc_info=True)
-                    img_bytes = None
-
-                if img_bytes:
-                    # Добавляем в медиагруппу (подпись только у первой картинки)
-                    if len(media_group) == 0:
-                        caption = (
-                            f"📅 Расписание на неделю для {entity_label}: {escape_html(entity_name)}\n"
-                            f"📆 Неделя: {monday.strftime('%d.%m.%Y')} - {(monday + datetime.timedelta(days=5)).strftime('%d.%m.%Y')}"
-                        )
-                        media_group.append(InputMediaPhoto(media=img_bytes, caption=caption))
-                    else:
-                        media_group.append(InputMediaPhoto(media=img_bytes))
-                    generated_count += 1
-                    percent = 50 + int((generated_count / total_days_to_check) * 50)
-                    await progress.update(min(95, percent), f"📅 {weekday_name} готов")
-
-                    # Небольшая задержка между генерацией картинок
-                    await asyncio.sleep(0.3)
+                # Используем ту же логику, что и в get_week_schedule_structured
+                today = datetime.date.today()
+                days_since_monday = today.weekday()
+                if days_since_monday == 6:  # Воскресенье
+                    monday = today + datetime.timedelta(days=1)
                 else:
-                    logger.warning(f"Не удалось сгенерировать картинку для {date_str}")
+                    monday = today - datetime.timedelta(days=days_since_monday)
 
-            logger.info(f"Генерация завершена: создано {len(media_group)} картинок из {total_days_to_check} проверенных дней")
-
-            # Отправляем все картинки одним MediaGroup
-            logger.info(f"Сгенерировано {len(media_group)} картинок для отправки")
-            if media_group:
-                # Сохраняем состояние для возврата
-                user_data["export_back_mode"] = mode
-                user_data["export_back_query"] = entity_name
-                user_data["export_back_date"] = (monday + datetime.timedelta(days=5)).strftime("%Y-%m-%d")
-                if user_data.get(CTX_SCHEDULE_PAGES):
-                    user_data["export_back_pages"] = user_data[CTX_SCHEDULE_PAGES]
-                    user_data["export_back_page_index"] = user_data.get(CTX_CURRENT_PAGE_INDEX, 0)
-
-                back_kbd = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ Назад к расписанию", callback_data=CallbackData.BACK_TO_SCHEDULE.value)],
-                    [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
-                ])
-
-                # Отправляем MediaGroup
+                logger.info(f"Запрашиваю расписание на неделю для {entity_name} (тип: {entity_type}, неделя с {monday.strftime('%d.%m.%Y')})")
                 try:
-                    sent_messages = await update.callback_query.message.reply_media_group(media=media_group)
-                    # Добавляем только одно финальное сообщение с информацией
-                    if sent_messages:
-                        entity_label_text = ENTITY_GROUP_GENITIVE if mode == MODE_STUDENT else ENTITY_TEACHER_GENITIVE
-                        await sent_messages[-1].reply_text(
-                            f"📅 Расписание на неделю для {entity_label_text}: {escape_html(entity_name)}",
-                            reply_markup=back_kbd
-                        )
+                    week_schedule = await get_week_schedule_structured(entity_name, entity_type, start_date=today)
+                    if not week_schedule:
+                        logger.warning(f"get_week_schedule_structured вернул пустой результат для {entity_name}")
+                        week_schedule = {}
                 except Exception as e:
-                    logger.error(f"Ошибка при отправке MediaGroup: {e}", exc_info=True)
-                    # Если MediaGroup не работает, отправляем по одной
-                    logger.info(f"Отправляю {len(media_group)} фото по отдельности")
-                    for i, media in enumerate(media_group):
-                        try:
-                            caption = media.caption if i == 0 else None
-                            reply_markup = back_kbd if i == len(media_group) - 1 else None
-                            await update.callback_query.message.reply_photo(
-                                photo=media.media,
-                                caption=caption,
-                                reply_markup=reply_markup
+                    logger.error(f"Ошибка при получении расписания на неделю: {e}", exc_info=True)
+                    week_schedule = {}
+
+                logger.info(f"Получено расписание на неделю: {len(week_schedule)} дней с парами (неделя с {monday.strftime('%d.%m.%Y')})")
+
+                weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"]
+                entity_label = ENTITY_TEACHER_GENITIVE if mode == MODE_TEACHER else ENTITY_GROUP_GENITIVE
+
+                # Сначала определяем, сколько дней с парами будет
+                # Но мы будем проверять каждый день индивидуально через get_schedule_structured
+                # так как week_schedule может быть неполным
+                logger.info(f"Начинаю генерацию картинок для недели с {monday.strftime('%d.%m.%Y')}")
+
+                # Собираем все картинки и подписи
+                media_group = []
+                generated_count = 0
+                total_days_to_check = 6  # Пн-Сб
+
+                logger.info(f"Начинаю обработку {total_days_to_check} дней недели")
+                for day_offset in range(total_days_to_check):  # Пн-Сб
+                    current_date = monday + datetime.timedelta(days=day_offset)
+                    date_str = current_date.strftime("%Y-%m-%d")
+                    weekday_name = weekdays[day_offset]
+
+                    logger.info(f"Обрабатываю день {date_str} ({weekday_name})")
+                    if progress:
+                        await progress.update(int((day_offset / total_days_to_check) * 50), f"📅 Проверяю {weekday_name}...")
+
+                    # Получаем структурированное расписание для дня
+                    try:
+                        day_schedule, err = await get_schedule_structured(date_str, entity_name, entity_type)
+                        if err:
+                            logger.warning(f"Не удалось получить расписание для {date_str}: {err}")
+                            continue
+                        if not day_schedule:
+                            logger.debug(f"День {date_str}: пустое расписание, пропускаем")
+                            continue
+                    except Exception as schedule_error:
+                        logger.error(f"Ошибка при получении расписания для {date_str}: {schedule_error}", exc_info=True)
+                        continue
+
+                    # Проверяем, есть ли пары в структурированном расписании
+                    day_pairs = day_schedule.get("pairs", [])
+                    if not day_pairs:
+                        logger.debug(f"День {date_str}: нет пар в структурированном расписании, пропускаем")
+                        continue
+
+                    logger.info(f"День {date_str}: найдено {len(day_pairs)} пар, генерирую картинку...")
+                    try:
+                        img_bytes = await generate_day_schedule_image(day_schedule, entity_name, entity_type)
+                        if img_bytes:
+                            logger.info(f"✅ Картинка для {date_str} успешно сгенерирована")
+                        else:
+                            logger.warning(f"generate_day_schedule_image вернул None для {date_str}")
+                    except Exception as img_error:
+                        logger.error(f"Ошибка при генерации картинки для {date_str}: {img_error}", exc_info=True)
+                        img_bytes = None
+
+                    if img_bytes:
+                        # Добавляем в медиагруппу (подпись только у первой картинки)
+                        if len(media_group) == 0:
+                            caption = (
+                                f"📅 Расписание на неделю для {entity_label}: {escape_html(entity_name)}\n"
+                                f"📆 Неделя: {monday.strftime('%d.%m.%Y')} - {(monday + datetime.timedelta(days=5)).strftime('%d.%m.%Y')}"
                             )
-                            await asyncio.sleep(0.5)  # Увеличена задержка для стабильности
-                        except Exception as photo_error:
-                            logger.error(f"Ошибка при отправке фото {i}: {photo_error}", exc_info=True)
+                            media_group.append(InputMediaPhoto(media=img_bytes, caption=caption))
+                        else:
+                            media_group.append(InputMediaPhoto(media=img_bytes))
+                        generated_count += 1
+                        if progress:
+                            percent = 50 + int((generated_count / total_days_to_check) * 50)
+                            await progress.update(min(95, percent), f"📅 {weekday_name} готов")
 
-                await progress.finish()
-            else:
-                await progress.finish("⚠️ Не удалось сгенерировать изображения.", delete_after=0)
+                        # Небольшая задержка между генерацией картинок
+                        await asyncio.sleep(0.3)
+                    else:
+                        logger.warning(f"Не удалось сгенерировать картинку для {date_str}")
+
+                logger.info(f"Генерация завершена: создано {len(media_group)} картинок из {total_days_to_check} проверенных дней")
+
+                # Отправляем все картинки одним MediaGroup
+                logger.info(f"Сгенерировано {len(media_group)} картинок для отправки")
+                if media_group:
+                    # Сохраняем состояние для возврата
+                    user_data["export_back_mode"] = mode
+                    user_data["export_back_query"] = entity_name
+                    user_data["export_back_date"] = (monday + datetime.timedelta(days=5)).strftime("%Y-%m-%d")
+                    if user_data.get(CTX_SCHEDULE_PAGES):
+                        user_data["export_back_pages"] = user_data[CTX_SCHEDULE_PAGES]
+                        user_data["export_back_page_index"] = user_data.get(CTX_CURRENT_PAGE_INDEX, 0)
+
+                    back_kbd = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⬅️ Назад к расписанию", callback_data=CallbackData.BACK_TO_SCHEDULE.value)],
+                        [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+                    ])
+
+                    # Отправляем MediaGroup
+                    try:
+                        sent_messages = await update.callback_query.message.reply_media_group(media=media_group)
+                        # Добавляем только одно финальное сообщение с информацией
+                        if sent_messages and len(sent_messages) > 0:
+                            entity_label_text = ENTITY_GROUP_GENITIVE if mode == MODE_STUDENT else ENTITY_TEACHER_GENITIVE
+                            try:
+                                await update.callback_query.message.reply_text(
+                                    f"📅 Расписание на неделю для {entity_label_text}: {escape_html(entity_name)}",
+                                    reply_markup=back_kbd
+                                )
+                            except Exception as reply_error:
+                                logger.debug(f"Ошибка при отправке финального сообщения: {reply_error}", exc_info=True)
+                    except Exception as e:
+                        logger.error(f"Ошибка при отправке MediaGroup: {e}", exc_info=True)
+                        # Если MediaGroup не работает, отправляем по одной
+                        logger.info(f"Отправляю {len(media_group)} фото по отдельности")
+                        for i, media in enumerate(media_group):
+                            try:
+                                caption = media.caption if i == 0 else None
+                                reply_markup = back_kbd if i == len(media_group) - 1 else None
+                                await update.callback_query.message.reply_photo(
+                                    photo=media.media,
+                                    caption=caption,
+                                    reply_markup=reply_markup
+                                )
+                                await asyncio.sleep(0.5)  # Увеличена задержка для стабильности
+                            except Exception as photo_error:
+                                logger.error(f"Ошибка при отправке фото {i}: {photo_error}", exc_info=True)
+
+                    if progress:
+                        await progress.finish()
+                else:
+                    if progress:
+                        await progress.finish("⚠️ Не удалось сгенерировать изображения.", delete_after=0)
+                    try:
+                        await update.callback_query.message.reply_text("⚠️ Не удалось сгенерировать изображения.")
+                    except Exception as e:
+                        logger.debug(f"Ошибка при отправке сообщения: {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"❌ Ошибка при генерации картинок по дням: {e}", exc_info=True)
                 try:
-                    await update.callback_query.message.reply_text("⚠️ Не удалось сгенерировать изображения.")
-                except Exception as e:
-                    logger.debug(f"Ошибка при отправке сообщения: {e}", exc_info=True)
-        except Exception as e:
-            logger.error(f"❌ Ошибка при генерации картинок по дням: {e}", exc_info=True)
-            try:
-                await update.callback_query.message.reply_text("❌ Произошла ошибка при генерации картинок. Попробуйте позже.")
-            except Exception as reply_error:
-                logger.debug(f"Ошибка при отправке сообщения: {reply_error}", exc_info=True)
-            try:
-                await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
-            except Exception as finish_error:
-                logger.debug(f"Ошибка при завершении прогресса: {finish_error}", exc_info=True)
-        finally:
-            logger.info(f"Завершение export_days_images, блокировка будет снята автоматически")
+                    await update.callback_query.message.reply_text("❌ Произошла ошибка при генерации картинок. Попробуйте позже.")
+                except Exception as reply_error:
+                    logger.debug(f"Ошибка при отправке сообщения: {reply_error}", exc_info=True)
+                try:
+                    if progress:
+                        await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
+                except Exception as finish_error:
+                    logger.debug(f"Ошибка при завершении прогресса: {finish_error}", exc_info=True)
+    except Exception as context_error:
+        logger.error(f"❌ Критическая ошибка в user_busy_context: {context_error}", exc_info=True)
+        try:
+            await update.callback_query.message.reply_text("❌ Произошла критическая ошибка. Попробуйте позже.")
+        except Exception as reply_error:
+            logger.debug(f"Ошибка при отправке сообщения: {reply_error}", exc_info=True)
+    finally:
+        logger.info(f"✅ Завершение export_days_images, блокировка будет снята автоматически")
 
 
 async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):

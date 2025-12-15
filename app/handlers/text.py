@@ -29,7 +29,7 @@ from .settings import settings_menu_callback
 from .feedback import process_feedback_message
 from .admin_dialogs import process_user_reply_to_admin_message
 from .schedule import handle_schedule_search, detect_query_type, safe_get_schedule, send_schedule_with_pagination
-from .utils import load_user_data_from_db, get_default_reply_keyboard, safe_answer_callback_query
+from .utils import load_user_data_from_db, get_default_reply_keyboard, safe_answer_callback_query, user_busy_context
 from .admin_dialogs import get_admin_reply_states
 from .notifications import schedule_daily_notifications
 
@@ -395,9 +395,23 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
         await settings_menu_callback(update, context)
         return
 
+    # Проверяем, что режим установлен
+    mode = user_data.get(CTX_MODE)
+    if not mode:
+        logger.error(f"❌ [{user_id}] CTX_MODE не установлен в user_data при установке по умолчанию")
+        user_data.pop(CTX_AWAITING_DEFAULT_QUERY, None)
+        kbd = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_DATA_SETTINGS_MENU)],
+            [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+        ])
+        await update.message.reply_text(
+            "❌ Ошибка: режим не установлен. Пожалуйста, выберите режим через /start.",
+            reply_markup=kbd
+        )
+        return
+
     # Используем context manager для автоматического управления блокировкой
     with user_busy_context(user_data):
-        mode = user_data[CTX_MODE]
         mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
         logger.info(f"⚙️ [{user_id}] @{username} → Устанавливает {mode_text} по умолчанию: '{text}'")
 

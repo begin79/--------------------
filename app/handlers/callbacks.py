@@ -371,6 +371,8 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = update.callback_query.data
     user_data = context.user_data
 
+    logger.debug(f"🔍 callback_router: получен callback '{data}' от пользователя {user_id}")
+
     # Валидация callback data
     if not validate_callback_data(data):
         logger.warning(f"⚠️ [{user_id}] Некорректные данные callback: {data[:50]}")
@@ -514,14 +516,30 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Обработка префиксов
     for prefix, handler in PREFIXES:
         if data.startswith(prefix):
+            logger.debug(f"🔍 Найден префикс '{prefix}' для callback '{data[:50]}...', вызываю handler: {handler.__name__}")
             try:
-                # Используем context manager для автоматического управления блокировкой
-                with user_busy_context(user_data):
+                # Функции экспорта сами управляют блокировкой через user_busy_context
+                # Не используем внешний user_busy_context для них
+                handlers_with_own_busy_context = [
+                    export_days_images, export_week_schedule_image,
+                    export_week_schedule_file, export_semester_excel
+                ]
+
+                if handler in handlers_with_own_busy_context:
+                    # Эти функции сами управляют блокировкой
                     try:
                         await handler(update, context, data)
                     except TypeError:
                         # Если функция принимает только 2 аргумента
                         await handler(update, context)
+                else:
+                    # Используем context manager для автоматического управления блокировкой
+                    with user_busy_context(user_data):
+                        try:
+                            await handler(update, context, data)
+                        except TypeError:
+                            # Если функция принимает только 2 аргумента
+                            await handler(update, context)
             except Exception as e:
                 user_id = update.effective_user.id if update.effective_user else "unknown"
                 logger.error(f"❌ Ошибка в обработчике префикса '{prefix}' (callback: '{data[:50]}...') для пользователя {user_id}: {e}", exc_info=True)
