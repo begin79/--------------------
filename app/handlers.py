@@ -25,6 +25,8 @@ from .constants import (
     CALLBACK_DATA_EXPORT_WEEK_IMAGE, CALLBACK_DATA_EXPORT_WEEK_FILE, CALLBACK_DATA_EXPORT_MENU,
     CALLBACK_DATA_EXPORT_DAYS_IMAGES, CALLBACK_DATA_EXPORT_SEMESTER,
     CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX, CALLBACK_DATA_FEEDBACK,
+    CALLBACK_DATA_RESET_SETTINGS, CALLBACK_DATA_DO_RESET_SETTINGS,
+    CALLBACK_DATA_SET_NOTIFICATION_TIME, CALLBACK_DATA_CONFIRM_MODE,
     API_TYPE_GROUP, API_TYPE_TEACHER, GROUP_NAME_PATTERN, CallbackData,
     MODE_STUDENT, MODE_TEACHER, ENTITY_GROUP, ENTITY_GROUPS, ENTITY_GROUP_GENITIVE,
     ENTITY_TEACHER, ENTITY_TEACHER_GENITIVE, ENTITY_STUDENT,
@@ -175,8 +177,8 @@ class ExportProgress:
         self.current_text = update_text
         try:
             await self.message.edit_text(self._format(update_text, percent))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Ошибка при обновлении прогресса: {e}", exc_info=True)
 
     async def finish(self, text: str = "✅ Экспорт готов!", delete_after: float = 5.0) -> None:
         if not self.message:
@@ -212,8 +214,8 @@ def _schedule_daily_notifications(context: ContextTypes.DEFAULT_TYPE, chat_id: i
     for job in context.job_queue.get_jobs_by_name(job_name):
         try:
             job.schedule_removal()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Ошибка при обновлении прогресса: {e}", exc_info=True)
 
     query = user_data.get(CTX_DEFAULT_QUERY)
     mode = user_data.get(CTX_DEFAULT_MODE)
@@ -336,8 +338,8 @@ async def start_user_reply_to_admin(
 
     try:
         await update.callback_query.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Ошибка при редактировании reply_markup: {e}", exc_info=True)
 
     await update.callback_query.answer("Напишите ответ администратору.", show_alert=False)
     await update.callback_query.message.reply_text(
@@ -364,8 +366,8 @@ async def handle_user_dismiss_admin_message(
 
     try:
         await update.callback_query.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Ошибка при редактировании reply_markup: {e}", exc_info=True)
 
     await update.callback_query.answer("Уведомление закрыто.", show_alert=False)
     await update.callback_query.message.reply_text("Если потребуется, вы всегда можете открыть /settings и связаться с администратором ещё раз.")
@@ -535,8 +537,8 @@ async def _delete_message_after_delay(bot, chat_id: int, message_id: int, delay:
     await asyncio.sleep(delay)
     try:
         await bot.delete_message(chat_id=chat_id, message_id=message_id)
-    except Exception:
-        pass  # Игнорируем ошибки при удалении
+    except Exception as e:
+        logger.debug(f"Ошибка при удалении сообщения: {e}", exc_info=True)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user:
@@ -544,7 +546,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
-    
+
     # Для админов: сбрасываем все флаги админ-панели при команде /start
     from .admin.utils import is_admin
     if is_admin(user_id):
@@ -764,8 +766,8 @@ async def help_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         if not await safe_edit_message_text(update.callback_query, text, reply_markup=reply_markup, parse_mode=ParseMode.HTML):
             try:
                 await update.callback_query.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Ошибка при отправке сообщения: {e}", exc_info=True)
     else:
         await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
@@ -797,9 +799,9 @@ async def settings_menu_callback(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton("Установить/изменить группу", callback_data="set_default_mode_student")],
         [InlineKeyboardButton("Установить/изменить преподавателя", callback_data="set_default_mode_teacher")],
         [InlineKeyboardButton(f"{'✅' if is_daily else '❌'} Ежедневные уведомления", callback_data=CALLBACK_DATA_TOGGLE_DAILY)],
-        [InlineKeyboardButton("⏰ Изменить время уведомлений", callback_data="set_notification_time")],
+        [InlineKeyboardButton("⏰ Изменить время уведомлений", callback_data=CALLBACK_DATA_SET_NOTIFICATION_TIME)],
         [InlineKeyboardButton("💬 Оставить отзыв", callback_data=CALLBACK_DATA_FEEDBACK)],
-        [InlineKeyboardButton("♻️ Сбросить настройки", callback_data="reset_settings")],
+        [InlineKeyboardButton("♻️ Сбросить настройки", callback_data=CALLBACK_DATA_RESET_SETTINGS)],
         [InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_DATA_BACK_TO_START)]
     ])
     try:
@@ -807,10 +809,10 @@ async def settings_menu_callback(update: Update, context: ContextTypes.DEFAULT_T
             if not await safe_edit_message_text(update.callback_query, text, reply_markup=kbd, parse_mode=ParseMode.HTML):
                 try:
                     await update.callback_query.message.reply_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
-                except Exception:
-                    pass
-        else:
-            await update.effective_message.reply_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
+                except Exception as e:
+                    logger.debug(f"Ошибка при отправке сообщения: {e}", exc_info=True)
+            else:
+                await update.effective_message.reply_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
     except BadRequest as e:
         if "Message is not modified" in str(e):
             logger.info("Меню настроек не изменилось.")
@@ -949,7 +951,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     # Для существующих пользователей предлагаем подтвердить выбор
                     keyboard = InlineKeyboardMarkup([
                         [
-                            InlineKeyboardButton("✅ Да, это правильный режим", callback_data=f"confirm_mode_{mode}_{hashlib.md5(query_text.encode()).hexdigest()[:8]}"),
+                            InlineKeyboardButton("✅ Да, это правильный режим", callback_data=f"{CALLBACK_DATA_CONFIRM_MODE}{mode}_{hashlib.md5(query_text.encode()).hexdigest()[:8]}"),
                             InlineKeyboardButton("❌ Нет, выбрать другой", callback_data=CALLBACK_DATA_BACK_TO_START)
                         ],
                         [InlineKeyboardButton("🔍 Ввести другой запрос", callback_data=CALLBACK_DATA_BACK_TO_START)]
@@ -1003,8 +1005,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.error(f"Критическая ошибка в handle_text_message: {e}", exc_info=True)
         try:
             await update.message.reply_text("❌ Произошла критическая ошибка. Попробуйте позже или используйте /start.")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Ошибка при обновлении прогресса: {e}", exc_info=True)
         clear_temporary_states(user_data)
 
 async def handle_default_query_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
@@ -1237,8 +1239,8 @@ async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAU
         if update.callback_query:
             try:
                 await safe_edit_message_text(update.callback_query, "⏳ Загружаю расписание...", reply_markup=None)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Ошибка при редактировании сообщения: {e}", exc_info=True)
 
         pages, err = await safe_get_schedule(date, query, api_type)
 
@@ -1773,8 +1775,8 @@ async def show_export_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, d
     if not await safe_edit_message_text(update.callback_query, text, reply_markup=kbd, parse_mode=ParseMode.HTML):
         try:
             await update.callback_query.message.reply_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Ошибка при обновлении прогресса: {e}", exc_info=True)
 
 def parse_export_callback_data(data: str, prefix: str) -> Tuple[Optional[str], Optional[str]]:
     """Парсит callback data для экспорта: возвращает (mode, query_hash)"""
@@ -1799,7 +1801,8 @@ def parse_semester_callback_data(data: str) -> Tuple[Optional[str], Optional[str
             semester_option = "_".join(parts[2:]) if len(parts) > 2 else None
             return mode, query_hash, semester_option
         return None, None, None
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Ошибка при парсинге semester callback data: {e}", exc_info=True)
         return None, None, None
 
 async def setup_export_process(
@@ -1989,8 +1992,8 @@ async def export_week_schedule_image(update: Update, context: ContextTypes.DEFAU
                             f"❌ Ошибка при отправке изображения. Попробуйте позже.",
                             reply_markup=back_kbd
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Ошибка при отправке сообщения: {e}", exc_info=True)
 
                 try:
                     await progress.finish("✅ Экспорт готов!")
@@ -2114,8 +2117,8 @@ async def export_week_schedule_file(update: Update, context: ContextTypes.DEFAUL
             else:
                 try:
                     await update.callback_query.message.reply_text("❌ Ошибка при генерации файла. Попробуйте позже.")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Ошибка при отправке сообщения: {e}", exc_info=True)
                 await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
         except Exception as e:
             logger.error(f"❌ Ошибка при генерации файла недели: {e}", exc_info=True)
@@ -2200,8 +2203,8 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 await progress.finish("📅 На этой неделе нет занятий.", delete_after=0)
                 try:
                     await update.callback_query.message.reply_text("📅 На этой неделе нет занятий.")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Ошибка при отправке сообщения: {e}", exc_info=True)
                 return
 
             # Собираем все картинки и подписи
@@ -2301,18 +2304,18 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 await progress.finish("⚠️ Не удалось сгенерировать изображения.", delete_after=0)
                 try:
                     await update.callback_query.message.reply_text("⚠️ Не удалось сгенерировать изображения.")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Ошибка при отправке сообщения: {e}", exc_info=True)
         except Exception as e:
             logger.error(f"❌ Ошибка при генерации картинок по дням: {e}", exc_info=True)
             try:
                 await update.callback_query.message.reply_text("❌ Произошла ошибка при генерации картинок. Попробуйте позже.")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Ошибка при отправке сообщения: {e}", exc_info=True)
             try:
                 await progress.finish("❌ Ошибка при экспорте.", delete_after=0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Ошибка при завершении прогресса: {e}", exc_info=True)
 
 
 async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
@@ -2435,12 +2438,12 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
                         f"❌ Ошибка при отправке файла. Попробуйте позже.",
                         reply_markup=back_kbd
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Ошибка при отправке сообщения: {e}", exc_info=True)
                 try:
                     await progress.finish("❌ Ошибка при отправке файла.", delete_after=0)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Ошибка при завершении прогресса: {e}", exc_info=True)
                 return
 
             if mode == MODE_TEACHER and per_group_rows:
@@ -2474,7 +2477,7 @@ async def export_semester_excel(update: Update, context: ContextTypes.DEFAULT_TY
 async def handle_confirm_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
     """Подтверждение режима при умном холодном старте"""
     user_data = context.user_data
-    parts = data.replace("confirm_mode_", "").split("_", 1)
+    parts = data.replace(CALLBACK_DATA_CONFIRM_MODE, "").split("_", 1)
     if len(parts) == 2:
         mode = parts[0]
         pending_query = user_data.get(f"pending_query_{mode}")
@@ -2638,7 +2641,7 @@ async def handle_reset_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
         "Будут удалены: выбранная группа/преподаватель и отключены уведомления."
     )
     kbd = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Да, сбросить", callback_data="do_reset_settings")],
+        [InlineKeyboardButton("✅ Да, сбросить", callback_data=CALLBACK_DATA_DO_RESET_SETTINGS)],
         [InlineKeyboardButton("⬅️ Отмена", callback_data=CALLBACK_DATA_SETTINGS_MENU)]
     ])
     await safe_edit_message_text(update.callback_query, prompt, reply_markup=kbd)
@@ -2657,8 +2660,8 @@ async def handle_reset_execute(update: Update, context: ContextTypes.DEFAULT_TYP
             for j in job:
                 try:
                     j.schedule_removal()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Ошибка при удалении задачи: {e}", exc_info=True)
     # Чистим user_data
     for key in [
         CTX_DEFAULT_QUERY,
@@ -2677,8 +2680,8 @@ async def handle_reset_execute(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         # Полное удаление записи и создание чистой с дефолтами
         db.delete_user(user_id)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Ошибка при удалении пользователя: {e}", exc_info=True)
     # Создаем запись со сброшенными настройками
     db.save_user(
         user_id=user_id,
@@ -2905,10 +2908,10 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         CallbackData.HELP_COMMAND_INLINE.value: lambda u, c, d: help_command_handler(u, c),  # принимает 2
         "help_command_inline": lambda u, c, d: help_command_handler(u, c),
         CALLBACK_DATA_SETTINGS_MENU: lambda u, c, d: settings_menu_callback(u, c),  # принимает 2
-        "reset_settings": handle_reset_confirm,
-        "do_reset_settings": handle_reset_execute,
+        CALLBACK_DATA_RESET_SETTINGS: handle_reset_confirm,
+        CALLBACK_DATA_DO_RESET_SETTINGS: handle_reset_execute,
         CALLBACK_DATA_TOGGLE_DAILY: lambda u, c, d: toggle_daily_notifications_callback(u, c),  # принимает 2
-        "set_notification_time": lambda u, c, d: show_notification_time_menu(u, c),  # принимает 2
+        CALLBACK_DATA_SET_NOTIFICATION_TIME: lambda u, c, d: show_notification_time_menu(u, c),  # принимает 2
         CALLBACK_DATA_CANCEL_INPUT: handle_cancel_input,
         CALLBACK_DATA_FEEDBACK: feedback_callback,
         CallbackData.BACK_TO_SCHEDULE.value: handle_back_to_schedule,
@@ -2955,7 +2958,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ("set_default_mode_", handle_set_default_mode),
         ("set_default_from_schedule_", handle_set_default_from_schedule),
         ("quick_schedule_", handle_quick_schedule),
-        ("confirm_mode_", handle_confirm_mode),
+        (CALLBACK_DATA_CONFIRM_MODE, handle_confirm_mode),
         (CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX, handle_notification_open_callback),
         (f"{CALLBACK_DATA_DATE_TODAY}_quick_", handle_quick_date_callback),
         (f"{CALLBACK_DATA_DATE_TOMORROW}_quick_", handle_quick_date_callback),

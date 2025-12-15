@@ -44,6 +44,10 @@ class CallbackData(str, Enum):
     BACK_TO_SCHEDULE = "back_to_schedule_from_export"
     FEEDBACK = "feedback"
     SET_DEFAULT_FROM_SCHEDULE = "set_default_from_schedule"
+    RESET_SETTINGS = "reset_settings"
+    DO_RESET_SETTINGS = "do_reset_settings"
+    SET_NOTIFICATION_TIME = "set_notification_time"
+    CONFIRM_MODE = "confirm_mode_"
 
 # Префиксы для callback data
 class CallbackPrefix(str, Enum):
@@ -79,6 +83,10 @@ CALLBACK_DATA_EXPORT_SEMESTER = CallbackData.EXPORT_SEMESTER.value
 CALLBACK_DATA_TEACHER_PHOTO = CallbackData.TEACHER_PHOTO.value
 CALLBACK_DATA_TEACHER_PROFILE = CallbackData.TEACHER_PROFILE.value
 CALLBACK_DATA_FEEDBACK = CallbackData.FEEDBACK.value
+CALLBACK_DATA_RESET_SETTINGS = CallbackData.RESET_SETTINGS.value
+CALLBACK_DATA_DO_RESET_SETTINGS = CallbackData.DO_RESET_SETTINGS.value
+CALLBACK_DATA_SET_NOTIFICATION_TIME = CallbackData.SET_NOTIFICATION_TIME.value
+CALLBACK_DATA_CONFIRM_MODE = CallbackData.CONFIRM_MODE.value
 
 CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX = CallbackPrefix.REFRESH.value
 CALLBACK_DATA_PREV_SCHEDULE_PREFIX = CallbackPrefix.PREV.value
