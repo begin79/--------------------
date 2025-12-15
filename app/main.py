@@ -18,6 +18,10 @@ from .handlers import (
     handle_text_message,
     callback_router,
 )
+# Импортируем из новых модулей
+from .handlers.start import start_command
+from .handlers.help import help_command_handler
+from .handlers.settings import settings_menu_callback
 from .jobs import check_schedule_changes_job
 from .http import close_http_client
 from .admin.database import admin_db
@@ -118,7 +122,7 @@ async def text_message_with_admin_check(update: Update, context: ContextTypes.DE
             # Продолжаем обычную обработку команды /start
             await handle_text_message(update, context)
             return
-        
+
         # Проверяем флаги ожидания ввода только если это не команда /start
         if context.user_data.get('awaiting_maintenance_msg'):
             await handle_maintenance_message_input(update, context)
