@@ -121,9 +121,187 @@ async def _apply_default_selection(
         )
 
 
+async def _check_bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Проверяет статус бота. Возвращает True если бот доступен."""
+    from ..admin.utils import is_admin
+    user_id = update.effective_user.id
+    is_admin_user = is_admin(user_id)
+    if not is_admin_user and not is_bot_enabled():
+        maintenance_msg = get_maintenance_message()
+        await update.message.reply_text(maintenance_msg)
+        return False
+    return True
+
+
+async def _handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
+    """Обрабатывает ответ администратору. Возвращает True если сообщение обработано."""
+    user_data = context.user_data
+    user_id = update.effective_user.id
+    
+    pending_admin_id = safe_get_user_data(user_data, "pending_admin_reply")
+    if not pending_admin_id:
+        reply_states = get_admin_reply_states(context)
+        state = reply_states.get(user_id)
+        if state and state.get("admin_id"):
+            pending_admin_id = state["admin_id"]
+            user_data["pending_admin_reply"] = pending_admin_id
+
+    if pending_admin_id:
+        lowered = text.lower()
+        if lowered in {"отмена", "cancel", "/cancel"}:
+            user_data.pop("pending_admin_reply", None)
+            reply_states = get_admin_reply_states(context)
+            reply_states.pop(user_id, None)
+            await update.message.reply_text("✅ Ответ администратору отменён.")
+        else:
+            try:
+                await process_user_reply_to_admin_message(update, context, pending_admin_id, text)
+            except Exception as e:
+                logger.error(f"Ошибка при обработке ответа администратору: {e}", exc_info=True)
+                await update.message.reply_text("❌ Произошла ошибка при отправке ответа. Попробуйте позже.")
+                clear_temporary_states(user_data)
+        return True
+    return False
+
+
+async def _handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
+    """Обрабатывает отзыв. Возвращает True если сообщение обработано."""
+    try:
+        if await process_feedback_message(update, context, text):
+            return True
+    except Exception as e:
+        logger.error(f"Ошибка при обработке отзыва: {e}", exc_info=True)
+        clear_temporary_states(context.user_data)
+    return False
+
+
+async def _handle_commands(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
+    """Обрабатывает команды. Возвращает True если сообщение обработано."""
+    user_data = context.user_data
+    
+    # Команда /start или "Старт"
+    if text == "/start" or text.startswith("/start") or text.strip().lower() == "старт":
+        try:
+            await start_command(update, context)
+        except Exception as e:
+            logger.error(f"Ошибка в start_command: {e}", exc_info=True)
+            await update.message.reply_text("❌ Произошла ошибка. Попробуйте команду /start ещё раз.")
+            clear_temporary_states(user_data)
+        return True
+
+    # Обработка кнопки "Настройки"
+    if text.strip().lower() == "настройки":
+        try:
+            await settings_menu_callback(update, context)
+        except Exception as e:
+            logger.error(f"Ошибка в settings_menu_callback: {e}", exc_info=True)
+            await update.message.reply_text("❌ Произошла ошибка при открытии настроек.")
+            clear_temporary_states(user_data)
+        return True
+
+    # Обработка кнопки "Меню" (обратная совместимость)
+    if text.strip().lower() == "меню":
+        try:
+            await start_command(update, context)
+        except Exception as e:
+            logger.error(f"Ошибка в start_command (меню): {e}", exc_info=True)
+            await update.message.reply_text("❌ Произошла ошибка. Попробуйте команду /start ещё раз.")
+            clear_temporary_states(user_data)
+        return True
+    
+    return False
+
+
+async def _handle_cold_start(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
+    """Обрабатывает умный холодный старт. Возвращает True если сообщение обработано."""
+    user_data = context.user_data
+    
+    # Умный холодный старт: если режим не выбран, пытаемся определить по тексту
+    if not safe_get_user_data(user_data, CTX_MODE) and not safe_get_user_data(user_data, CTX_AWAITING_DEFAULT_QUERY) and not safe_get_user_data(user_data, CTX_AWAITING_MANUAL_DATE):
+        # Проверяем, есть ли у пользователя установленная группа/преподаватель
+        has_default_query = bool(user_data.get(CTX_DEFAULT_QUERY))
+
+        detected = detect_query_type(text)
+        if detected:
+            mode, query_text = detected
+            mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
+            user_data[CTX_MODE] = mode
+
+            # Если у пользователя нет установленной группы/преподавателя, предлагаем сначала выбрать режим через /start
+            if not has_default_query:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎓 Я студент", callback_data=CALLBACK_DATA_MODE_STUDENT)],
+                    [InlineKeyboardButton("🧑‍🏫 Я преподаватель", callback_data=CALLBACK_DATA_MODE_TEACHER)],
+                    [InlineKeyboardButton("❓ Не знаю", callback_data=CallbackData.HELP_COMMAND_INLINE.value)]
+                ])
+                await update.message.reply_text(
+                    f"🔍 Я вижу, что вы ищете {mode_text}: <b>{escape_html(query_text)}</b>\n\n"
+                    f"Для начала работы с ботом выберите, кто вы:",
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
+                )
+                return True
+            else:
+                # Для существующих пользователей предлагаем подтвердить выбор
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Да, это правильный режим", callback_data=f"{CALLBACK_DATA_CONFIRM_MODE}{mode}_{hashlib.md5(query_text.encode()).hexdigest()[:8]}"),
+                        InlineKeyboardButton("❌ Нет, выбрать другой", callback_data=CALLBACK_DATA_BACK_TO_START)
+                    ],
+                    [InlineKeyboardButton("🔍 Ввести другой запрос", callback_data=CALLBACK_DATA_BACK_TO_START)]
+                ])
+                user_data[f"pending_query_{mode}"] = query_text
+                await update.message.reply_text(
+                    f"🔍 Я определил, что вы ищете {mode_text}: <b>{escape_html(query_text)}</b>\n\n"
+                    f"Правильно?",
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
+                )
+                return True
+        else:
+            # Не удалось определить, предлагаем выбрать режим
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎓 Я студент", callback_data=CALLBACK_DATA_MODE_STUDENT)],
+                [InlineKeyboardButton("🧑‍🏫 Я преподаватель", callback_data=CALLBACK_DATA_MODE_TEACHER)],
+                [InlineKeyboardButton("❓ Не знаю", callback_data=CallbackData.HELP_COMMAND_INLINE.value)]
+            ])
+            await update.message.reply_text(
+                "🤔 Я не могу определить, что вы ищете. Пожалуйста, выберите режим:",
+                reply_markup=keyboard
+            )
+            return True
+    
+    return False
+
+
+async def _handle_input_states(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
+    """Обрабатывает состояния ожидания ввода. Возвращает True если сообщение обработано."""
+    user_data = context.user_data
+    
+    if safe_get_user_data(user_data, CTX_AWAITING_DEFAULT_QUERY):
+        try:
+            await handle_default_query_input(update, context, text)
+        except Exception as e:
+            logger.error(f"Ошибка в handle_default_query_input: {e}", exc_info=True)
+            await update.message.reply_text("❌ Произошла ошибка при обработке запроса.")
+            clear_temporary_states(user_data)
+        return True
+    elif safe_get_user_data(user_data, CTX_AWAITING_MANUAL_DATE):
+        try:
+            await handle_manual_date_input(update, context, text)
+        except Exception as e:
+            logger.error(f"Ошибка в handle_manual_date_input: {e}", exc_info=True)
+            await update.message.reply_text("❌ Произошла ошибка при обработке даты.")
+            clear_temporary_states(user_data)
+        return True
+    
+    return False
+
+
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Обработчик текстовых сообщений с улучшенной обработкой ошибок и состояний
+    Обработчик текстовых сообщений с улучшенной обработкой ошибок и состояний.
+    Использует цепочку обработчиков для лучшей читаемости и поддерживаемости.
     """
     if not update.effective_user or not update.message:
         logger.error("handle_text_message вызван без effective_user или message")
@@ -133,12 +311,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
 
     try:
-        # Проверяем статус бота (кроме админов) - кешируем результат
-        from ..admin.utils import is_admin
-        is_admin_user = is_admin(user_id)
-        if not is_admin_user and not is_bot_enabled():
-            maintenance_msg = get_maintenance_message()
-            await update.message.reply_text(maintenance_msg)
+        # 1. Проверка статуса бота
+        if not await _check_bot_status(update, context):
             return
 
         username = update.effective_user.username or "без username"
@@ -147,75 +321,24 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         logger.info(f"💬 [{user_id}] @{username} ({first_name}) → Текстовое сообщение: '{text[:50]}{'...' if len(text) > 50 else ''}'")
 
-        # Обработка ответа администратору
-        pending_admin_id = safe_get_user_data(user_data, "pending_admin_reply")
-        if not pending_admin_id:
-            reply_states = get_admin_reply_states(context)
-            state = reply_states.get(user_id)
-            if state and state.get("admin_id"):
-                pending_admin_id = state["admin_id"]
-                user_data["pending_admin_reply"] = pending_admin_id
-
-        if pending_admin_id:
-            lowered = text.lower()
-            if lowered in {"отмена", "cancel", "/cancel"}:
-                user_data.pop("pending_admin_reply", None)
-                reply_states = get_admin_reply_states(context)
-                reply_states.pop(user_id, None)
-                await update.message.reply_text("✅ Ответ администратору отменён.")
-            else:
-                try:
-                    await process_user_reply_to_admin_message(update, context, pending_admin_id, text)
-                except Exception as e:
-                    logger.error(f"Ошибка при обработке ответа администратору: {e}", exc_info=True)
-                    await update.message.reply_text("❌ Произошла ошибка при отправке ответа. Попробуйте позже.")
-                    clear_temporary_states(user_data)
+        # 2. Обработка ответа администратору
+        if await _handle_admin_reply(update, context, text):
             return
 
-        # Проверяем, ожидается ли отзыв
-        try:
-            if await process_feedback_message(update, context, text):
-                return
-        except Exception as e:
-            logger.error(f"Ошибка при обработке отзыва: {e}", exc_info=True)
-            clear_temporary_states(user_data)
+        # 3. Обработка отзыва
+        if await _handle_feedback(update, context, text):
+            return
 
-        # Проверяем, не занят ли пользователь
+        # 4. Проверка занятости
         if is_user_busy(user_data):
             await update.message.reply_text("⏳ Пожалуйста, подождите, я обрабатываю предыдущий запрос...")
             return
 
-        # Команда /start или "Старт"
-        if text == "/start" or text.startswith("/start") or text.strip().lower() == "старт":
-            try:
-                await start_command(update, context)
-            except Exception as e:
-                logger.error(f"Ошибка в start_command: {e}", exc_info=True)
-                await update.message.reply_text("❌ Произошла ошибка. Попробуйте команду /start ещё раз.")
-                clear_temporary_states(user_data)
+        # 5. Обработка команд
+        if await _handle_commands(update, context, text):
             return
 
-        # Обработка кнопки "Настройки"
-        if text.strip().lower() == "настройки":
-            try:
-                await settings_menu_callback(update, context)
-            except Exception as e:
-                logger.error(f"Ошибка в settings_menu_callback: {e}", exc_info=True)
-                await update.message.reply_text("❌ Произошла ошибка при открытии настроек.")
-                clear_temporary_states(user_data)
-            return
-
-        # Обработка кнопки "Меню" (обратная совместимость)
-        if text.strip().lower() == "меню":
-            try:
-                await start_command(update, context)
-            except Exception as e:
-                logger.error(f"Ошибка в start_command (меню): {e}", exc_info=True)
-                await update.message.reply_text("❌ Произошла ошибка. Попробуйте команду /start ещё раз.")
-                clear_temporary_states(user_data)
-            return
-
-        # Загружаем данные из БД при первом обращении
+        # 6. Загружаем данные из БД при первом обращении
         if not safe_get_user_data(user_data, CTX_DEFAULT_QUERY):
             try:
                 load_user_data_from_db(user_id, user_data)
@@ -223,84 +346,21 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 logger.error(f"Ошибка при загрузке данных пользователя: {e}", exc_info=True)
                 # Продолжаем работу, даже если не удалось загрузить данные
 
-        # Умный холодный старт: если режим не выбран, пытаемся определить по тексту
-        # ВАЖНО: для новых пользователей без установленной группы/преподавателя не устанавливаем default_query автоматически
-        if not safe_get_user_data(user_data, CTX_MODE) and not safe_get_user_data(user_data, CTX_AWAITING_DEFAULT_QUERY) and not safe_get_user_data(user_data, CTX_AWAITING_MANUAL_DATE):
-            # Проверяем, есть ли у пользователя установленная группа/преподаватель
-            has_default_query = bool(user_data.get(CTX_DEFAULT_QUERY))
+        # 7. Умный холодный старт
+        if await _handle_cold_start(update, context, text):
+            return
 
-            detected = detect_query_type(text)
-            if detected:
-                mode, query_text = detected
-                mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
-                user_data[CTX_MODE] = mode
+        # 8. Обработка состояний ожидания ввода
+        if await _handle_input_states(update, context, text):
+            return
 
-                # Если у пользователя нет установленной группы/преподавателя, предлагаем сначала выбрать режим через /start
-                if not has_default_query:
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🎓 Я студент", callback_data=CALLBACK_DATA_MODE_STUDENT)],
-                        [InlineKeyboardButton("🧑‍🏫 Я преподаватель", callback_data=CALLBACK_DATA_MODE_TEACHER)],
-                        [InlineKeyboardButton("❓ Не знаю", callback_data=CallbackData.HELP_COMMAND_INLINE.value)]
-                    ])
-                    await update.message.reply_text(
-                        f"🔍 Я вижу, что вы ищете {mode_text}: <b>{escape_html(query_text)}</b>\n\n"
-                        f"Для начала работы с ботом выберите, кто вы:",
-                        reply_markup=keyboard,
-                        parse_mode=ParseMode.HTML
-                    )
-                    return
-                else:
-                    # Для существующих пользователей предлагаем подтвердить выбор
-                    keyboard = InlineKeyboardMarkup([
-                        [
-                            InlineKeyboardButton("✅ Да, это правильный режим", callback_data=f"{CALLBACK_DATA_CONFIRM_MODE}{mode}_{hashlib.md5(query_text.encode()).hexdigest()[:8]}"),
-                            InlineKeyboardButton("❌ Нет, выбрать другой", callback_data=CALLBACK_DATA_BACK_TO_START)
-                        ],
-                        [InlineKeyboardButton("🔍 Ввести другой запрос", callback_data=CALLBACK_DATA_BACK_TO_START)]
-                    ])
-                    user_data[f"pending_query_{mode}"] = query_text
-                    await update.message.reply_text(
-                        f"🔍 Я определил, что вы ищете {mode_text}: <b>{escape_html(query_text)}</b>\n\n"
-                        f"Правильно?",
-                        reply_markup=keyboard,
-                        parse_mode=ParseMode.HTML
-                    )
-                    return
-            else:
-                # Не удалось определить, предлагаем выбрать режим
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🎓 Я студент", callback_data=CALLBACK_DATA_MODE_STUDENT)],
-                    [InlineKeyboardButton("🧑‍🏫 Я преподаватель", callback_data=CALLBACK_DATA_MODE_TEACHER)],
-                    [InlineKeyboardButton("❓ Не знаю", callback_data=CallbackData.HELP_COMMAND_INLINE.value)]
-                ])
-                await update.message.reply_text(
-                    "🤔 Я не могу определить, что вы ищете. Пожалуйста, выберите режим:",
-                    reply_markup=keyboard
-                )
-                return
-
-        # Обработка различных состояний ожидания ввода
-        if safe_get_user_data(user_data, CTX_AWAITING_DEFAULT_QUERY):
-            try:
-                await handle_default_query_input(update, context, text)
-            except Exception as e:
-                logger.error(f"Ошибка в handle_default_query_input: {e}", exc_info=True)
-                await update.message.reply_text("❌ Произошла ошибка при обработке запроса.")
-                clear_temporary_states(user_data)
-        elif safe_get_user_data(user_data, CTX_AWAITING_MANUAL_DATE):
-            try:
-                await handle_manual_date_input(update, context, text)
-            except Exception as e:
-                logger.error(f"Ошибка в handle_manual_date_input: {e}", exc_info=True)
-                await update.message.reply_text("❌ Произошла ошибка при обработке даты.")
-                clear_temporary_states(user_data)
-        else:
-            try:
-                await handle_schedule_search(update, context, text)
-            except Exception as e:
-                logger.error(f"Ошибка в handle_schedule_search: {e}", exc_info=True)
-                await update.message.reply_text("❌ Произошла ошибка при поиске расписания.")
-                clear_temporary_states(user_data)
+        # 9. Поиск расписания (fallback)
+        try:
+            await handle_schedule_search(update, context, text)
+        except Exception as e:
+            logger.error(f"Ошибка в handle_schedule_search: {e}", exc_info=True)
+            await update.message.reply_text("❌ Произошла ошибка при поиске расписания.")
+            clear_temporary_states(user_data)
 
     except Exception as e:
         # Общая обработка ошибок для всей функции
