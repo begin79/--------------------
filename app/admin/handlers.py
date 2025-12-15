@@ -953,13 +953,16 @@ async def admin_cache_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         schedule_cache.clear()
         list_cache.clear()
 
-        # Очищаем кеш фотографий преподавателей
+        # Очищаем кеш фотографий преподавателей (если модуль доступен)
         try:
             from ..teacher_photo import teacher_photo_cache, teacher_profile_cache
             teacher_photo_cache.clear()
             teacher_profile_cache.clear()
-        except:
+        except ImportError:
+            # Модуль teacher_photo не используется, пропускаем
             pass
+        except Exception as e:
+            logger.debug(f"Ошибка при очистке кеша фотографий: {e}", exc_info=True)
 
         text = (
             f"✅ <b>Кеш очищен!</b>\n\n"
@@ -1399,7 +1402,7 @@ async def admin_feedback_list_callback(update: Update, context: ContextTypes.DEF
             first_name = feedback.get('first_name') or 'Без имени'
             created_at = feedback.get('created_at', '')
             is_read = feedback.get('is_read', False)
-            
+
             # Форматируем дату (только дата, без времени для компактности)
             try:
                 if isinstance(created_at, str):
@@ -1409,18 +1412,18 @@ async def admin_feedback_list_callback(update: Update, context: ContextTypes.DEF
                 date_str = dt.strftime('%d.%m.%Y')
             except:
                 date_str = str(created_at)[:10] if len(str(created_at)) > 10 else str(created_at)
-            
+
             read_marker = "✅" if is_read else "🆕"
-            
+
             # Компактная кнопка: маркер, номер, имя, дата
             # Ограничиваем длину имени для компактности
             name_display = first_name[:12] + "..." if len(first_name) > 12 else first_name
             button_text = f"{read_marker} #{idx} {name_display} ({date_str})"
-            
+
             # Ограничиваем длину кнопки (Telegram лимит ~64 символа)
             if len(button_text) > 60:
                 button_text = f"{read_marker} #{idx} {name_display[:8]} ({date_str})"
-            
+
             kbd_rows.append([
                 InlineKeyboardButton(
                     button_text,
@@ -1516,7 +1519,7 @@ async def admin_exit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data.pop('awaiting_direct_message', None)
 
     # Импортируем start_command из handlers
-    from ..handlers import start_command
+    from ..handlers.start import start_command
 
     if update.callback_query:
         await update.callback_query.answer("Вы вышли из админ-панели")
