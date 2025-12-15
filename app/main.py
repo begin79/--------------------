@@ -92,6 +92,7 @@ async def text_message_with_admin_check(update: Update, context: ContextTypes.DE
         return
 
     user_id = update.effective_user.id
+    text = update.message.text.strip() if update.message.text else ""
 
     # Проверяем, ожидает ли админ ввода
     from .admin.utils import is_admin
@@ -102,6 +103,23 @@ async def text_message_with_admin_check(update: Update, context: ContextTypes.DE
     )
 
     if is_admin(user_id):
+        # ВАЖНО: Если админ отправляет /start или "Старт", сбрасываем все флаги админ-панели
+        if text == "/start" or text.startswith("/start") or text.strip().lower() == "старт":
+            # Сбрасываем все флаги ожидания ввода админ-панели
+            context.user_data.pop('awaiting_broadcast', None)
+            context.user_data.pop('broadcast_message', None)
+            context.user_data.pop('awaiting_maintenance_msg', None)
+            context.user_data.pop('awaiting_admin_id', None)
+            context.user_data.pop('awaiting_remove_admin_id', None)
+            context.user_data.pop('awaiting_user_search', None)
+            context.user_data.pop('awaiting_direct_message', None)
+            context.user_data.pop('direct_message_target', None)
+            logger.info(f"Админ {user_id} отправил /start - сброшены все флаги админ-панели")
+            # Продолжаем обычную обработку команды /start
+            await handle_text_message(update, context)
+            return
+        
+        # Проверяем флаги ожидания ввода только если это не команда /start
         if context.user_data.get('awaiting_maintenance_msg'):
             await handle_maintenance_message_input(update, context)
             return

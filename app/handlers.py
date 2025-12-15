@@ -543,6 +543,21 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error("start_command вызван без effective_user")
         return
 
+    user_id = update.effective_user.id
+    
+    # Для админов: сбрасываем все флаги админ-панели при команде /start
+    from .admin.utils import is_admin
+    if is_admin(user_id):
+        context.user_data.pop('awaiting_broadcast', None)
+        context.user_data.pop('broadcast_message', None)
+        context.user_data.pop('awaiting_maintenance_msg', None)
+        context.user_data.pop('awaiting_admin_id', None)
+        context.user_data.pop('awaiting_remove_admin_id', None)
+        context.user_data.pop('awaiting_user_search', None)
+        context.user_data.pop('awaiting_direct_message', None)
+        context.user_data.pop('direct_message_target', None)
+        logger.debug(f"Админ {user_id}: сброшены все флаги админ-панели при /start")
+
     # Проверяем статус бота (с обработкой ошибок, чтобы не блокировать работу при проблемах с БД)
     try:
         if not is_bot_enabled():
