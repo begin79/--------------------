@@ -11,17 +11,12 @@ try:
 except ImportError:
     logging.error("Не удалось импортировать config.py")
     raise
-from .handlers import (
-    start_command,
-    help_command_handler,
-    settings_menu_callback,
-    handle_text_message,
-    callback_router,
-)
 # Импортируем из новых модулей
 from .handlers.start import start_command
 from .handlers.help import help_command_handler
 from .handlers.settings import settings_menu_callback
+# Временно импортируем из старого handlers.py до завершения рефакторинга
+from .handlers import handle_text_message, callback_router
 from .jobs import check_schedule_changes_job
 from .http import close_http_client
 from .admin.database import admin_db
