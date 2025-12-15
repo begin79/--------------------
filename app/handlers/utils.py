@@ -167,3 +167,85 @@ def get_admin_reply_states(context: ContextTypes.DEFAULT_TYPE) -> dict:
     """Хранит состояния ожидания ответа пользователем администратору"""
     return context.application.bot_data.setdefault("admin_reply_states", {})
 
+
+def load_user_data_from_db(user_id: int, user_data: dict):
+    """Загружает данные пользователя из БД в user_data"""
+    from ..database import db
+    from ..constants import (
+        CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE,
+        CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME
+    )
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        user_db = db.get_user(user_id)
+        if user_db:
+            if user_db.get('default_query'):
+                user_data[CTX_DEFAULT_QUERY] = user_db['default_query']
+            if user_db.get('default_mode'):
+                user_data[CTX_DEFAULT_MODE] = user_db['default_mode']
+            if user_db.get('daily_notifications') is not None:
+                user_data[CTX_DAILY_NOTIFICATIONS] = bool(user_db['daily_notifications'])
+            if user_db.get('notification_time'):
+                user_data[CTX_NOTIFICATION_TIME] = user_db['notification_time']
+            logger.debug(f"Данные пользователя {user_id} загружены из БД")
+    except Exception as e:
+        logger.error(f"Ошибка загрузки данных пользователя {user_id} из БД: {e}", exc_info=True)
+
+
+def save_user_data_to_db(user_id: int, username: str, first_name: str, last_name: str, user_data: dict):
+    """Сохраняет данные пользователя из user_data в БД (только если данные изменились)"""
+    from ..database import db
+    from ..constants import (
+        CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE,
+        CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME
+    )
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # 1. Получаем текущее состояние
+        existing = db.get_user(user_id)
+
+        # 2. Данные для сохранения
+        new_query = user_data.get(CTX_DEFAULT_QUERY)
+        new_mode = user_data.get(CTX_DEFAULT_MODE)
+        new_notif = bool(user_data.get(CTX_DAILY_NOTIFICATIONS, False))
+        new_time = user_data.get(CTX_NOTIFICATION_TIME, '21:00')
+
+        # 3. Сравниваем. Если пользователь уже есть и данные те же — выходим.
+        if existing:
+            if (existing.get('default_query') == new_query and
+                existing.get('default_mode') == new_mode and
+                bool(existing.get('daily_notifications')) == new_notif and
+                existing.get('notification_time') == new_time):
+                return  # ИЗМЕНЕНИЙ НЕТ
+
+        # 4. Пишем только если есть изменения
+        db.save_user(
+            user_id=user_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+            default_query=new_query,
+            default_mode=new_mode,
+            daily_notifications=new_notif,
+            notification_time=new_time
+        )
+        logger.debug(f"Данные пользователя {user_id} сохранены в БД")
+    except Exception as e:
+        logger.error(f"Ошибка БД: {e}", exc_info=True)
+
+
+def get_default_reply_keyboard():
+    """Создает стандартную клавиатуру с кнопками 'Старт' и 'Настройки'"""
+    from telegram import ReplyKeyboardMarkup, KeyboardButton
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("Старт"), KeyboardButton("Настройки")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False
+    )
+

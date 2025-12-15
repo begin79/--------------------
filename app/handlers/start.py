@@ -19,57 +19,9 @@ from ..constants import (
 from ..utils import escape_html
 from ..database import db
 from ..admin.utils import is_bot_enabled, get_maintenance_message
-from ..state_manager import safe_get_user_data
-from .utils import safe_edit_message_text
+from .utils import safe_edit_message_text, save_user_data_to_db, get_default_reply_keyboard
 
 logger = logging.getLogger(__name__)
-
-
-def get_default_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Создает стандартную клавиатуру с кнопками 'Старт' и 'Настройки'"""
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("Старт"), KeyboardButton("Настройки")]
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=False
-    )
-
-
-def save_user_data_to_db(user_id: int, username: str, first_name: str, last_name: str, user_data: dict):
-    """Сохраняет данные пользователя из user_data в БД (только если данные изменились)"""
-    try:
-        # 1. Получаем текущее состояние
-        existing = db.get_user(user_id)
-
-        # 2. Данные для сохранения
-        new_query = user_data.get(CTX_DEFAULT_QUERY)
-        new_mode = user_data.get(CTX_DEFAULT_MODE)
-        new_notif = bool(user_data.get(CTX_DAILY_NOTIFICATIONS, False))
-        new_time = user_data.get(CTX_NOTIFICATION_TIME, '21:00')
-
-        # 3. Сравниваем. Если пользователь уже есть и данные те же — выходим.
-        if existing:
-            if (existing.get('default_query') == new_query and
-                existing.get('default_mode') == new_mode and
-                bool(existing.get('daily_notifications')) == new_notif and
-                existing.get('notification_time') == new_time):
-                return  # ИЗМЕНЕНИЙ НЕТ
-
-        # 4. Пишем только если есть изменения
-        db.save_user(
-            user_id=user_id,
-            username=username,
-            first_name=first_name,
-            last_name=last_name,
-            default_query=new_query,
-            default_mode=new_mode,
-            daily_notifications=new_notif,
-            notification_time=new_time
-        )
-        logger.debug(f"Данные пользователя {user_id} сохранены в БД")
-    except Exception as e:
-        logger.error(f"Ошибка БД: {e}", exc_info=True)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
