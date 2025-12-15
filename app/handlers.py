@@ -2141,7 +2141,25 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
     username = update.effective_user.username or "без username"
     logger.info(f"📤 [{user_id}] @{username} → Экспорт расписания: по дням (картинки)")
 
-    mode, query_hash = parse_export_callback_data(data, CALLBACK_DATA_EXPORT_DAYS_IMAGES)
+    # Парсим callback data: "export_days_images_{mode}_{query_hash}"
+    try:
+        # Убираем префикс "export_days_images_"
+        prefix = CALLBACK_DATA_EXPORT_DAYS_IMAGES + "_"
+        if not data.startswith(prefix):
+            logger.error(f"Callback data не начинается с префикса: {prefix}, data={data}")
+            await safe_answer_callback_query(update.callback_query, "Ошибка данных", show_alert=True)
+            return
+        parts = data[len(prefix):].split("_", 1)
+        if len(parts) == 2:
+            mode, query_hash = parts[0], parts[1]
+        else:
+            logger.error(f"Неверный формат callback data: {data}")
+            await safe_answer_callback_query(update.callback_query, "Ошибка данных", show_alert=True)
+            return
+    except Exception as e:
+        logger.error(f"Ошибка парсинга callback data: {e}", exc_info=True)
+        await safe_answer_callback_query(update.callback_query, "Ошибка данных", show_alert=True)
+        return
     logger.info(f"Экспорт по дням: mode = {mode}, query_hash = {query_hash}")
 
     if not mode or not query_hash:
