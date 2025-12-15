@@ -543,46 +543,51 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
             else:
                 monday = today - datetime.timedelta(days=days_since_monday)
 
-            week_schedule = await get_week_schedule_structured(entity_name, entity_type, start_date=today)
-            logger.info(f"Получено расписание на неделю: {len(week_schedule)} дней (неделя с {monday.strftime('%d.%m.%Y')})")
+            logger.info(f"Запрашиваю расписание на неделю для {entity_name} (тип: {entity_type}, неделя с {monday.strftime('%d.%m.%Y')})")
+            try:
+                week_schedule = await get_week_schedule_structured(entity_name, entity_type, start_date=today)
+                if not week_schedule:
+                    logger.warning(f"get_week_schedule_structured вернул пустой результат для {entity_name}")
+                    week_schedule = {}
+            except Exception as e:
+                logger.error(f"Ошибка при получении расписания на неделю: {e}", exc_info=True)
+                week_schedule = {}
+            
+            logger.info(f"Получено расписание на неделю: {len(week_schedule)} дней с парами (неделя с {monday.strftime('%d.%m.%Y')})")
 
             weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"]
             entity_label = ENTITY_TEACHER_GENITIVE if mode == MODE_TEACHER else ENTITY_GROUP_GENITIVE
 
             # Сначала определяем, сколько дней с парами будет
-            days_with_pairs_list = []
-            for day_offset in range(6):
-                current_date = monday + datetime.timedelta(days=day_offset)
-                date_str = current_date.strftime("%Y-%m-%d")
-                pairs = week_schedule.get(date_str, [])
-                if pairs:
-                    days_with_pairs_list.append((day_offset, date_str, weekdays[day_offset]))
-
-            total_days_with_pairs = len(days_with_pairs_list)
-            if total_days_with_pairs == 0:
-                await progress.finish("📅 На этой неделе нет занятий.", delete_after=0)
-                try:
-                    await update.callback_query.message.reply_text("📅 На этой неделе нет занятий.")
-                except Exception as e:
-                    logger.debug(f"Ошибка при отправке сообщения: {e}", exc_info=True)
-                return
+            # Но мы будем проверять каждый день индивидуально через get_schedule_structured
+            # так как week_schedule может быть неполным
+            logger.info(f"Начинаю генерацию картинок для недели с {monday.strftime('%d.%m.%Y')}")
 
             # Собираем все картинки и подписи
             media_group = []
             generated_count = 0
+            total_days_to_check = 6  # Пн-Сб
 
-            for day_offset in range(6):  # Пн-Сб
+            logger.info(f"Начинаю обработку {total_days_to_check} дней недели")
+            for day_offset in range(total_days_to_check):  # Пн-Сб
                 current_date = monday + datetime.timedelta(days=day_offset)
                 date_str = current_date.strftime("%Y-%m-%d")
                 weekday_name = weekdays[day_offset]
 
-                pairs = week_schedule.get(date_str, [])
-                logger.debug(f"День {date_str}: {len(pairs)} пар в week_schedule")
+                logger.info(f"Обрабатываю день {date_str} ({weekday_name})")
+                await progress.update(int((day_offset / total_days_to_check) * 50), f"📅 Проверяю {weekday_name}...")
 
-                # Получаем структурированное расписание для дня (даже если нет пар в week_schedule)
-                day_schedule, err = await get_schedule_structured(date_str, entity_name, entity_type)
-                if err or not day_schedule:
-                    logger.warning(f"Не удалось получить расписание для {date_str}: {err}")
+                # Получаем структурированное расписание для дня
+                try:
+                    day_schedule, err = await get_schedule_structured(date_str, entity_name, entity_type)
+                    if err:
+                        logger.warning(f"Не удалось получить расписание для {date_str}: {err}")
+                        continue
+                    if not day_schedule:
+                        logger.debug(f"День {date_str}: пустое расписание, пропускаем")
+                        continue
+                except Exception as schedule_error:
+                    logger.error(f"Ошибка при получении расписания для {date_str}: {schedule_error}", exc_info=True)
                     continue
 
                 # Проверяем, есть ли пары в структурированном расписании
@@ -591,8 +596,13 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     logger.debug(f"День {date_str}: нет пар в структурированном расписании, пропускаем")
                     continue
 
+                logger.info(f"День {date_str}: найдено {len(day_pairs)} пар, генерирую картинку...")
                 try:
                     img_bytes = await generate_day_schedule_image(day_schedule, entity_name, entity_type)
+                    if img_bytes:
+                        logger.info(f"✅ Картинка для {date_str} успешно сгенерирована")
+                    else:
+                        logger.warning(f"generate_day_schedule_image вернул None для {date_str}")
                 except Exception as img_error:
                     logger.error(f"Ошибка при генерации картинки для {date_str}: {img_error}", exc_info=True)
                     img_bytes = None
@@ -608,13 +618,15 @@ async def export_days_images(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     else:
                         media_group.append(InputMediaPhoto(media=img_bytes))
                     generated_count += 1
-                    percent = int((generated_count / total_days_with_pairs) * 100)
-                    await progress.update(max(10, percent), f"📅 {weekday_name}")
+                    percent = 50 + int((generated_count / total_days_to_check) * 50)
+                    await progress.update(min(95, percent), f"📅 {weekday_name} готов")
 
                     # Небольшая задержка между генерацией картинок
                     await asyncio.sleep(0.3)
                 else:
                     logger.warning(f"Не удалось сгенерировать картинку для {date_str}")
+
+            logger.info(f"Генерация завершена: создано {len(media_group)} картинок из {total_days_to_check} проверенных дней")
 
             # Отправляем все картинки одним MediaGroup
             logger.info(f"Сгенерировано {len(media_group)} картинок для отправки")
