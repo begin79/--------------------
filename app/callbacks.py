@@ -149,6 +149,91 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await start_command(update, context)
         elif data.startswith(CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX):
             await handle_notification_open_callback(update, context, data)
+        elif data.startswith(CallbackData.VIEW_CHANGED_SCHEDULE.value):
+            # Обработка просмотра измененного расписания из уведомления
+            from .handlers.utils import safe_answer_callback_query, safe_edit_message_text
+            from .handlers.schedule import send_schedule_with_pagination
+            
+            if not update.callback_query:
+                return
+            
+            await safe_answer_callback_query(update.callback_query, "Загружаю расписание...")
+            
+            # Извлекаем mode и date из callback_data: "view_changed_schedule_student_2026-01-14"
+            prefix = CallbackData.VIEW_CHANGED_SCHEDULE.value
+            if not data.startswith(prefix):
+                logger.error(f"Неверный формат callback для просмотра измененного расписания: {data}")
+                await update.callback_query.answer("Ошибка: неверный формат команды", show_alert=True)
+                return
+            
+            # Убираем префикс и разделяем по последнему подчеркиванию перед датой
+            rest = data[len(prefix):]  # "student_2026-01-14"
+            # Ищем последнее подчеркивание перед датой (дата всегда в формате YYYY-MM-DD)
+            if "_" not in rest:
+                logger.error(f"Неверный формат callback для просмотра измененного расписания: {data}")
+                await update.callback_query.answer("Ошибка: неверный формат команды", show_alert=True)
+                return
+            
+            # Разделяем по первому подчеркиванию (mode_date)
+            parts = rest.split("_", 1)
+            if len(parts) != 2:
+                logger.error(f"Неверный формат callback для просмотра измененного расписания: {data}")
+                await update.callback_query.answer("Ошибка: неверный формат команды", show_alert=True)
+                return
+            
+            default_mode = parts[0]  # "student" или "teacher"
+            date_str = parts[1]  # "2026-01-14"
+            user_id = update.effective_user.id if update.effective_user else None
+            
+            if not user_id:
+                await update.callback_query.answer("Ошибка: не удалось определить пользователя", show_alert=True)
+                return
+            
+            # Получаем сохраненные данные расписания
+            schedule_key = f"changed_schedule_{user_id}_{date_str}"
+            schedule_data = context.bot_data.get(schedule_key)
+            
+            if not schedule_data:
+                # Если данных нет в кеше, пытаемся получить из настроек пользователя
+                user_data = context.user_data
+                query = user_data.get(CTX_DEFAULT_QUERY)
+                mode = user_data.get(CTX_DEFAULT_MODE) or default_mode
+                
+                if not query:
+                    await update.callback_query.answer("❌ Группа/преподаватель не установлены", show_alert=True)
+                    await start_command(update, context)
+                    return
+                
+                # Загружаем расписание заново
+                from .handlers.schedule import safe_get_schedule
+                api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
+                pages, err = await safe_get_schedule(date_str, query, api_type, bot=context.bot)
+                
+                if err or not pages:
+                    await update.callback_query.answer(f"❌ Не удалось загрузить расписание: {err or 'Не найдено'}", show_alert=True)
+                    return
+                
+                schedule_data = {
+                    "query": query,
+                    "mode": mode,
+                    "date": date_str,
+                    "pages": pages
+                }
+            
+            # Устанавливаем контекст для отображения расписания
+            user_data = context.user_data
+            user_data[CTX_LAST_QUERY] = schedule_data["query"]
+            user_data[CTX_MODE] = schedule_data["mode"]
+            user_data[CTX_SELECTED_DATE] = schedule_data["date"]
+            user_data[CTX_SCHEDULE_PAGES] = schedule_data["pages"]
+            user_data[CTX_CURRENT_PAGE_INDEX] = 0
+            
+            # Показываем расписание
+            try:
+                await send_schedule_with_pagination(update, context, msg_to_edit=update.callback_query.message)
+            except Exception as e:
+                logger.error(f"Ошибка при показе измененного расписания: {e}", exc_info=True)
+                await update.callback_query.answer("❌ Ошибка при загрузке расписания", show_alert=True)
         elif data == CALLBACK_DATA_CANCEL_INPUT:
             from .handlers.utils import safe_answer_callback_query
             
