@@ -528,7 +528,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка при обработке callback {data}: {e}", exc_info=True)
         try:
             await update.callback_query.answer("Произошла ошибка", show_alert=True)
-        except:
+        except Exception:
             pass
 
 
