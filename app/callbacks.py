@@ -571,10 +571,10 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             
             if query_type:
                 mode, search_text = query_type
-                entity_type = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
+                api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
                 
                 # Поиск сущностей (async функция!)
-                found, _ = await search_entities(search_text, entity_type)
+                found, _ = await search_entities(search_text, api_type)
                 
                 # Ограничиваем количество результатов
                 if found:
@@ -588,17 +588,16 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                             id=f"{mode}_{i}_{name}",
                             title=name,
                             description=f"Расписание {'группы' if mode == MODE_STUDENT else 'преподавателя'}",
-                            input_message_content=InputTextMessageContent(
-                                f"📅 Расписание: {name}\n"
-                                f"Режим: {'Студент' if mode == MODE_STUDENT else 'Преподаватель'}"
-                            )
+                            # Вставляем в чат только чистое название,
+                            # чтобы основной текстовый хендлер сразу искал расписание.
+                            input_message_content=InputTextMessageContent(name)
                         )
                     )
             else:
                 # Если тип не определен, ищем и в группах, и в преподавателях
-                groups_res, _ = await search_entities(query, ENTITY_GROUP)
+                groups_res, _ = await search_entities(query, API_TYPE_GROUP)
                 groups = groups_res[:5] if groups_res else []
-                teachers_res, _ = await search_entities(query, ENTITY_TEACHER)
+                teachers_res, _ = await search_entities(query, API_TYPE_TEACHER)
                 teachers = teachers_res[:5] if teachers_res else []
                 
                 for i, name in enumerate(groups):
@@ -607,9 +606,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                             id=f"student_{i}_{name}",
                             title=f"🎓 {name}",
                             description="Группа",
-                            input_message_content=InputTextMessageContent(
-                                f"📅 Расписание группы: {name}"
-                            )
+                            input_message_content=InputTextMessageContent(name)
                         )
                     )
                 
@@ -619,9 +616,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                             id=f"teacher_{i}_{name}",
                             title=f"🧑‍🏫 {name}",
                             description="Преподаватель",
-                            input_message_content=InputTextMessageContent(
-                                f"📅 Расписание преподавателя: {name}"
-                            )
+                            input_message_content=InputTextMessageContent(name)
                         )
                     )
         except Exception as e:
