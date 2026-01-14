@@ -505,8 +505,25 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e2:
                     logger.error(f"Ошибка при отправке сообщения об успехе: {e2}")
         else:
-            logger.warning(f"Неизвестный callback: {data}")
-            await update.callback_query.answer("Неизвестная команда")
+            # Проверяем, не является ли это устаревшим callback или callback от старой версии
+            # Игнорируем некоторые известные паттерны, которые могут быть от старых версий
+            known_old_patterns = [
+                "teacher_photo_", "teacher_profile_",  # Старые callbacks для профилей преподавателей
+            ]
+            
+            is_old_pattern = any(data.startswith(pattern) for pattern in known_old_patterns)
+            
+            if is_old_pattern:
+                # Это устаревший callback, просто отвечаем без предупреждения
+                logger.debug(f"Игнорирую устаревший callback: {data}")
+                await update.callback_query.answer("Эта функция больше не поддерживается", show_alert=False)
+            else:
+                # Неизвестный callback - логируем как предупреждение для отладки
+                logger.warning(f"Неизвестный callback: {data} (user_id: {update.effective_user.id if update.effective_user else 'unknown'})")
+                try:
+                    await update.callback_query.answer("Неизвестная команда", show_alert=False)
+                except Exception:
+                    pass
     except Exception as e:
         logger.error(f"Ошибка при обработке callback {data}: {e}", exc_info=True)
         try:
