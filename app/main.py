@@ -94,16 +94,20 @@ async def text_message_with_admin_check(update: Update, context: ContextTypes.DE
     user_id = update.effective_user.id
     text = update.message.text.strip() if update.message.text else ""
 
-    # В группах и супергруппах бот реагирует только на сообщения с его упоминанием,
-    # чтобы не перехватывать общий чат.
+    # В группах и супергруппах бот по умолчанию реагирует только на сообщения с его упоминанием,
+    # чтобы не перехватывать общий чат. Но сообщения, отправленные через inline-режим (via_bot),
+    # всегда считаем адресованными боту, даже без @username.
     chat = update.effective_chat
+    message = update.message
     if chat and chat.type in {"group", "supergroup"}:
-        bot_username = (context.bot.username or "").lower()
-        if bot_username:
-            mention = f"@{bot_username}"
-            if mention.lower() not in text.lower():
-                # Сообщение не адресовано боту — игнорируем.
-                return
+        is_inline_message = bool(message and message.via_bot and context.bot and message.via_bot.id == context.bot.id)
+        if not is_inline_message:
+            bot_username = (context.bot.username or "").lower()
+            if bot_username:
+                mention = f"@{bot_username}"
+                if mention.lower() not in text.lower():
+                    # Сообщение не адресовано боту — игнорируем.
+                    return
 
     # Проверяем, ожидает ли админ ввода
     from .admin.utils import is_admin
