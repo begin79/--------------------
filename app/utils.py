@@ -1,224 +1,181 @@
+"""
+Вспомогательные утилиты
+"""
 import html
-from typing import List, Dict, Optional, Tuple
 import hashlib
+import json
+import re
 import datetime
+from typing import List, Dict, Any, Optional
+
 
 def escape_html(text: str) -> str:
+    """
+    Экранирует HTML-символы в тексте для безопасного отображения в Telegram
+    """
     return html.escape(str(text))
 
+
 def hash_schedule(pages: List[str]) -> str:
-    content = "|".join(pages)
-    return hashlib.md5(content.encode("utf-8")).hexdigest()
-
-def get_next_weekday(date: datetime.date) -> datetime.date:
-    """Получить следующий рабочий день (пропуская выходные)"""
-    next_day = date + datetime.timedelta(days=1)
-    # Если воскресенье (6) или суббота (5), переходим на понедельник
-    while next_day.weekday() >= 5:  # 5 = суббота, 6 = воскресенье
-        next_day += datetime.timedelta(days=1)
-    return next_day
-
-def compare_schedules(old_schedule: Optional[Dict], new_schedule: Optional[Dict]) -> List[Dict]:
     """
-    Сравнивает старое и новое расписание и возвращает список изменений.
+    Создает хеш расписания для сравнения версий
+    """
+    if not pages:
+        return ""
+    content = "\n".join(pages)
+    return hashlib.md5(content.encode('utf-8')).hexdigest()
 
-    Args:
-        old_schedule: Структурированное расписание (из get_schedule_structured) или None
-        new_schedule: Структурированное расписание (из get_schedule_structured) или None
 
-    Returns:
-        Список словарей с изменениями, каждый содержит:
-        - type: "added", "removed", "modified", "time_changed", "auditorium_changed", "subject_changed"
-        - time: время пары
-        - old_pair: старая пара (для modified)
-        - new_pair: новая пара (для modified/added)
+def compare_schedules(old_schedule: Optional[Dict], new_schedule: Optional[Dict]) -> List[Dict[str, Any]]:
+    """
+    Сравнивает два расписания и возвращает список изменений
     """
     changes = []
-
-    if not old_schedule and not new_schedule:
+    
+    if not old_schedule or not new_schedule:
         return changes
-
-    if not old_schedule:
-        # Все пары новые
-        if new_schedule and new_schedule.get("pairs"):
-            for pair in new_schedule["pairs"]:
-                changes.append({
-                    "type": "added",
-                    "time": pair.get("time", "-"),
-                    "new_pair": pair
-                })
-        return changes
-
-    if not new_schedule:
-        # Все пары удалены
-        if old_schedule and old_schedule.get("pairs"):
-            for pair in old_schedule["pairs"]:
-                changes.append({
-                    "type": "removed",
-                    "time": pair.get("time", "-"),
-                    "old_pair": pair
-                })
-        return changes
-
-    old_pairs = {pair.get("time", ""): pair for pair in old_schedule.get("pairs", [])}
-    new_pairs = {pair.get("time", ""): pair for pair in new_schedule.get("pairs", [])}
-
-    all_times = set(old_pairs.keys()) | set(new_pairs.keys())
-
-    for time in sorted(all_times):
-        old_pair = old_pairs.get(time)
-        new_pair = new_pairs.get(time)
-
-        if not old_pair:
-            # Новая пара добавлена
-            changes.append({
-                "type": "added",
-                "time": time,
-                "new_pair": new_pair
-            })
-        elif not new_pair:
-            # Пара удалена
-            changes.append({
-                "type": "removed",
-                "time": time,
-                "old_pair": old_pair
-            })
-        else:
-            # Пара существует в обоих - проверяем изменения
-            modified_fields = []
-
-            if old_pair.get("subject", "").strip() != new_pair.get("subject", "").strip():
-                modified_fields.append("subject")
-            if old_pair.get("auditorium", "").strip() != new_pair.get("auditorium", "").strip():
-                modified_fields.append("auditorium")
-            if old_pair.get("teacher", "").strip() != new_pair.get("teacher", "").strip():
-                modified_fields.append("teacher")
-            if set(old_pair.get("groups", [])) != set(new_pair.get("groups", [])):
-                modified_fields.append("groups")
-
-            if modified_fields:
-                change_type = "modified"
-                if len(modified_fields) == 1:
-                    if "auditorium" in modified_fields:
-                        change_type = "auditorium_changed"
-                    elif "subject" in modified_fields:
-                        change_type = "subject_changed"
-                    elif "time" in modified_fields:
-                        change_type = "time_changed"
-
-                changes.append({
-                    "type": change_type,
-                    "time": time,
-                    "old_pair": old_pair,
-                    "new_pair": new_pair,
-                    "modified_fields": modified_fields
-                })
-
+    
+    old_pairs = old_schedule.get("pairs", [])
+    new_pairs = new_schedule.get("pairs", [])
+    
+    # Создаем словари для быстрого поиска
+    old_dict = {f"{p.get('time', '')}_{p.get('subject', '')}": p for p in old_pairs}
+    new_dict = {f"{p.get('time', '')}_{p.get('subject', '')}": p for p in new_pairs}
+    
+    # Находим добавленные пары
+    for key, pair in new_dict.items():
+        if key not in old_dict:
+            changes.append({"type": "added", "pair": pair})
+    
+    # Находим удаленные пары
+    for key, pair in old_dict.items():
+        if key not in new_dict:
+            changes.append({"type": "removed", "pair": pair})
+    
+    # Находим измененные пары
+    for key in old_dict:
+        if key in new_dict:
+            old_pair = old_dict[key]
+            new_pair = new_dict[key]
+            if old_pair != new_pair:
+                changes.append({"type": "modified", "old": old_pair, "new": new_pair})
+    
     return changes
 
-def format_schedule_changes(changes: List[Dict], date_str: str, query: str) -> str:
+
+def detect_pair_type(subject: str) -> str:
     """
-    Форматирует список изменений в красивое сообщение.
-
+    Определяет тип пары по названию предмета.
+    Возвращает ключ типа для использования с PAIR_TYPE_EMOJIS.
+    
     Args:
-        changes: Список изменений из compare_schedules
-        date_str: Дата в формате YYYY-MM-DD
-        query: Название группы/преподавателя
-
+        subject: Название предмета
+        
     Returns:
-        Отформатированное сообщение с изменениями
+        Ключ типа пары (лекция, практика, лабораторная, семинар, зачет, экзамен, консультация, default)
+    """
+    if not subject:
+        return "default"
+    
+    subject_lower = subject.lower()
+    
+    # Паттерны для определения типа пары
+    patterns = {
+        "лекция": [r"\bлекц\w*", r"\bл\.", r"\bл\b"],
+        "практика": [r"\bпракт\w*", r"\bпр\.", r"\bпр\b"],
+        "лабораторная": [r"\bлаб\w*", r"\bлабораторн\w*", r"\bл\.р\.", r"\bлр\b"],
+        "семинар": [r"\bсеминар\w*", r"\bсем\w*"],
+        "зачет": [r"\bзачет\w*", r"\bзач\w*"],
+        "экзамен": [r"\bэкзамен\w*", r"\bэкз\w*"],
+        "консультация": [r"\bконсультац\w*", r"\bконс\w*"],
+    }
+    
+    # Проверяем паттерны в порядке приоритета
+    for pair_type, type_patterns in patterns.items():
+        for pattern in type_patterns:
+            if re.search(pattern, subject_lower):
+                return pair_type
+    
+    return "default"
+
+
+def get_pair_type_emoji(subject: str) -> str:
+    """
+    Возвращает эмодзи для типа пары на основе названия предмета.
+    
+    Args:
+        subject: Название предмета
+        
+    Returns:
+        Эмодзи для типа пары
+    """
+    from .constants import PAIR_TYPE_EMOJIS
+    pair_type = detect_pair_type(subject)
+    return PAIR_TYPE_EMOJIS.get(pair_type, PAIR_TYPE_EMOJIS["default"])
+
+
+def get_next_weekday(date: datetime.date) -> datetime.date:
+    """
+    Получить следующий рабочий день (понедельник-суббота)
+    
+    Args:
+        date: Текущая дата
+        
+    Returns:
+        Следующий рабочий день
+    """
+    next_day = date + datetime.timedelta(days=1)
+    # Если следующий день - воскресенье, возвращаем понедельник
+    if next_day.weekday() == 6:  # Воскресенье
+        return next_day + datetime.timedelta(days=1)
+    return next_day
+
+
+def format_schedule_changes(changes: List[Dict[str, Any]], date_str: str, query: str) -> str:
+    """
+    Форматирует список изменений в читаемое сообщение
     """
     if not changes:
-        return ""
-
-    try:
-        date_obj = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-        date_display = date_obj.strftime("%d.%m.%Y")
-    except:
-        date_display = date_str
-
-    lines = [f"🔔 <b>Изменения в расписании</b>\n"]
-    lines.append(f"📅 <b>{date_display}</b> для {escape_html(query)}\n")
-
-    added = [c for c in changes if c["type"] == "added"]
-    removed = [c for c in changes if c["type"] == "removed"]
-    modified = [c for c in changes if c["type"] in ["modified", "auditorium_changed", "subject_changed", "time_changed"]]
-
+        return f"🔔 <b>Расписание изменилось</b>\n\nРасписание для {escape_html(query)} было обновлено."
+    
+    msg = f"🔔 <b>Изменения в расписании</b>\n\n"
+    msg += f"📅 Дата: {date_str}\n"
+    msg += f"📌 {escape_html(query)}\n\n"
+    
+    added = [c for c in changes if c.get("type") == "added"]
+    removed = [c for c in changes if c.get("type") == "removed"]
+    modified = [c for c in changes if c.get("type") == "modified"]
+    
     if added:
-        lines.append(f"\n➕ <b>Добавлено пар:</b> {len(added)}")
-        for change in added[:5]:  # Показываем максимум 5
-            pair = change["new_pair"]
-            time = pair.get("time", "-")
-            subject = pair.get("subject", "-")
-            auditorium = pair.get("auditorium", "-")
-            teacher = pair.get("teacher", "")
-
-            line = f"  • {time} — {escape_html(subject)}"
-            if auditorium and auditorium != "-":
-                line += f" (каб. {escape_html(auditorium)})"
-            if teacher:
-                line += f"\n    👤 {escape_html(teacher)}"
-            lines.append(line)
+        msg += "➕ <b>Добавлено:</b>\n"
+        for change in added[:5]:  # Ограничиваем количество
+            pair = change.get("pair", {})
+            time = pair.get("time", "")
+            subject = pair.get("subject", "")
+            msg += f"  • {time} - {escape_html(subject)}\n"
         if len(added) > 5:
-            lines.append(f"  ... и ещё {len(added) - 5}")
-
+            msg += f"  ... и еще {len(added) - 5}\n"
+        msg += "\n"
+    
     if removed:
-        lines.append(f"\n➖ <b>Удалено пар:</b> {len(removed)}")
-        for change in removed[:5]:  # Показываем максимум 5
-            pair = change["old_pair"]
-            time = pair.get("time", "-")
-            subject = pair.get("subject", "-")
-
-            lines.append(f"  • {time} — {escape_html(subject)}")
+        msg += "➖ <b>Удалено:</b>\n"
+        for change in removed[:5]:
+            pair = change.get("pair", {})
+            time = pair.get("time", "")
+            subject = pair.get("subject", "")
+            msg += f"  • {time} - {escape_html(subject)}\n"
         if len(removed) > 5:
-            lines.append(f"  ... и ещё {len(removed) - 5}")
-
+            msg += f"  ... и еще {len(removed) - 5}\n"
+        msg += "\n"
+    
     if modified:
-        lines.append(f"\n✏️ <b>Изменено пар:</b> {len(modified)}")
-        for change in modified[:5]:  # Показываем максимум 5
-            old_pair = change["old_pair"]
-            new_pair = change["new_pair"]
-            time = new_pair.get("time", "-")
-            modified_fields = change.get("modified_fields", [])
+        msg += "🔄 <b>Изменено:</b>\n"
+        for change in modified[:3]:
+            old_pair = change.get("old", {})
+            new_pair = change.get("new", {})
+            msg += f"  • {old_pair.get('time', '')} - {escape_html(old_pair.get('subject', ''))} → {escape_html(new_pair.get('subject', ''))}\n"
+        if len(modified) > 3:
+            msg += f"  ... и еще {len(modified) - 3}\n"
+    
+    return msg
 
-            if "auditorium" in modified_fields:
-                old_aud = old_pair.get("auditorium", "-")
-                new_aud = new_pair.get("auditorium", "-")
-                lines.append(f"  • {time} — кабинет изменён:")
-                lines.append(f"    {escape_html(old_aud)} → {escape_html(new_aud)}")
-
-            if "subject" in modified_fields:
-                old_subj = old_pair.get("subject", "-")
-                new_subj = new_pair.get("subject", "-")
-                lines.append(f"  • {time} — предмет изменён:")
-                lines.append(f"    {escape_html(old_subj)} → {escape_html(new_subj)}")
-
-            if "teacher" in modified_fields:
-                old_teach = old_pair.get("teacher", "-")
-                new_teach = new_pair.get("teacher", "-")
-                lines.append(f"  • {time} — преподаватель изменён:")
-                lines.append(f"    {escape_html(old_teach)} → {escape_html(new_teach)}")
-
-            if "groups" in modified_fields:
-                old_groups = ", ".join(old_pair.get("groups", []))
-                new_groups = ", ".join(new_pair.get("groups", []))
-                lines.append(f"  • {time} — группы изменены:")
-                lines.append(f"    {escape_html(old_groups)} → {escape_html(new_groups)}")
-
-            # Если изменено несколько полей одновременно
-            if len(modified_fields) > 1:
-                lines.append(f"  • {time} — изменено несколько параметров")
-                subject = new_pair.get("subject", "-")
-                auditorium = new_pair.get("auditorium", "-")
-                teacher = new_pair.get("teacher", "")
-                line = f"    {escape_html(subject)}"
-                if auditorium and auditorium != "-":
-                    line += f" (каб. {escape_html(auditorium)})"
-                if teacher:
-                    line += f" — {escape_html(teacher)}"
-                lines.append(line)
-
-        if len(modified) > 5:
-            lines.append(f"  ... и ещё {len(modified) - 5}")
-
-    return "\n".join(lines)

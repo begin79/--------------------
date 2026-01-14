@@ -11,7 +11,7 @@ from ..constants import (
     CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE, CTX_LAST_QUERY,
     CTX_SCHEDULE_PAGES, CTX_CURRENT_PAGE_INDEX, CTX_SELECTED_DATE,
     CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME,
-    CALLBACK_DATA_SETTINGS_MENU, CALLBACK_DATA_BACK_TO_START,
+    CALLBACK_DATA_SETTINGS_MENU, CALLBACK_DATA_BACK_TO_START, CALLBACK_DATA_BACK_TO_SCHEDULE,
     CALLBACK_DATA_TOGGLE_DAILY, CALLBACK_DATA_SET_NOTIFICATION_TIME,
     CALLBACK_DATA_FEEDBACK, CALLBACK_DATA_RESET_SETTINGS, CALLBACK_DATA_DO_RESET_SETTINGS,
     DEFAULT_NOTIFICATION_TIME, JOB_PREFIX_DAILY_SCHEDULE,
@@ -35,19 +35,33 @@ async def settings_menu_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     user_data = context.user_data
 
-    # ОПТИМИЗАЦИЯ: Загружаем из БД только если данные отсутствуют в контексте
-    if not user_data.get(CTX_DEFAULT_QUERY) and not user_data.get(CTX_DEFAULT_MODE):
-        load_user_data_from_db(user_id, user_data)
+    # БД - единственный источник правды: всегда загружаем данные из БД в начале важных действий
+    load_user_data_from_db(user_id, user_data, force=True)
 
     query = user_data.get(CTX_DEFAULT_QUERY, "Не задано")
     is_daily = user_data.get(CTX_DAILY_NOTIFICATIONS, False)
     notification_time = user_data.get(CTX_NOTIFICATION_TIME, DEFAULT_NOTIFICATION_TIME)
     logger.debug(f"📊 [{user_id}] Настройки: группа='{query}', уведомления={'вкл' if is_daily else 'выкл'}")
+    
+    # Проверяем, пришел ли пользователь из просмотра расписания
+    last_query = user_data.get(CTX_LAST_QUERY)
+    has_schedule_context = bool(last_query and user_data.get(CTX_SCHEDULE_PAGES))
+    
     # Формируем текст настроек с улучшенной структурой
     text = "⚙️ <b>Настройки</b>\n\n"
     text += f"📌 Текущая группа/преподаватель:\n   <code>{escape_html(query)}</code>\n\n"
     text += f"⏰ Время уведомлений:\n   <code>{notification_time}</code>"
-    kbd = InlineKeyboardMarkup([
+    
+    # Формируем клавиатуру с контекстной кнопкой
+    keyboard_buttons = []
+    
+    # Если пользователь пришел из расписания, добавляем кнопку возврата к нему
+    if has_schedule_context:
+        keyboard_buttons.append([
+            InlineKeyboardButton(f"🔙 Вернуться к {escape_html(last_query)}", callback_data=CALLBACK_DATA_BACK_TO_SCHEDULE)
+        ])
+    
+    keyboard_buttons.extend([
         [InlineKeyboardButton("Установить/изменить группу", callback_data="set_default_mode_student")],
         [InlineKeyboardButton("Установить/изменить преподавателя", callback_data="set_default_mode_teacher")],
         [InlineKeyboardButton(f"{'✅' if is_daily else '❌'} Ежедневные уведомления", callback_data=CALLBACK_DATA_TOGGLE_DAILY)],
@@ -56,6 +70,8 @@ async def settings_menu_callback(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton("♻️ Сбросить настройки", callback_data=CALLBACK_DATA_RESET_SETTINGS)],
         [InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_DATA_BACK_TO_START)]
     ])
+    
+    kbd = InlineKeyboardMarkup(keyboard_buttons)
     try:
         if update.callback_query:
             if not await safe_edit_message_text(update.callback_query, text, reply_markup=kbd, parse_mode=ParseMode.HTML):

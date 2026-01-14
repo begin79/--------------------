@@ -169,6 +169,7 @@ async def fetch_semester_schedule(
     entity_type: str,
     start_date: dt.date,
     end_date: dt.date,
+    bot=None,
 ) -> "OrderedDict[dt.date, Dict]":
     valid_days: List[dt.date] = []
     cursor = start_date
@@ -194,7 +195,7 @@ async def fetch_semester_schedule(
     async def fetch_day(date_obj: dt.date):
         date_str = date_obj.strftime("%Y-%m-%d")
         async with semaphore:
-            structured, err = await get_schedule_structured(date_str, query, entity_type)
+            structured, err = await get_schedule_structured(date_str, query, entity_type, bot=bot)
         if err:
             logger.debug("Нет расписания на %s: %s", date_str, err)
             return

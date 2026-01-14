@@ -22,6 +22,7 @@ from ..state_manager import set_user_busy
 from .utils import safe_edit_message_text, safe_answer_callback_query, save_user_data_to_db
 from .settings import settings_menu_callback
 from .start import start_command
+from ..jobs import daily_schedule_job
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ def schedule_daily_notifications(context: ContextTypes.DEFAULT_TYPE, chat_id: in
     utc_hour = (hour - 3) % 24
     job_data = {"query": query, "mode": mode}
     context.job_queue.run_daily(
-        __import__("app.jobs").jobs.daily_schedule_job,
+        daily_schedule_job,
         time=datetime.time(utc_hour, minute, tzinfo=timezone.utc),
         chat_id=chat_id,
         name=job_name,
@@ -102,7 +103,7 @@ async def set_notification_time(update: Update, context: ContextTypes.DEFAULT_TY
         utc_hour = (hour - 3) % 24
         job_data = {"query": user_data[CTX_DEFAULT_QUERY], "mode": user_data[CTX_DEFAULT_MODE]}
         context.job_queue.run_daily(
-            __import__("app.jobs").jobs.daily_schedule_job,
+            daily_schedule_job,
             time=datetime.time(utc_hour, minute, tzinfo=timezone.utc),
             chat_id=chat_id,
             name=job_name,
@@ -151,7 +152,7 @@ async def toggle_daily_notifications_callback(update: Update, context: ContextTy
         utc_hour = (hour - 3) % 24
         job_data = {"query": user_data[CTX_DEFAULT_QUERY], "mode": user_data[CTX_DEFAULT_MODE]}
         context.job_queue.run_daily(
-            __import__("app.jobs").jobs.daily_schedule_job,
+            daily_schedule_job,
             time=datetime.time(utc_hour, minute, tzinfo=timezone.utc),
             chat_id=chat_id,
             name=job_name,
@@ -197,7 +198,7 @@ async def handle_notification_open_callback(update: Update, context: ContextType
     from .schedule import safe_get_schedule, send_schedule_with_pagination
     from .utils import user_busy_context
 
-    with user_busy_context(user_data):
+    async with user_busy_context(user_data):
         pages, err = await safe_get_schedule(date_str, query, api_type)
         if err or not pages:
             await update.callback_query.message.reply_text(

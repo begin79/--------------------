@@ -5,19 +5,20 @@ import asyncio
 import hashlib
 import logging
 from dateutil.parser import parse as parse_date
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from ..constants import (
     CTX_MODE, CTX_SELECTED_DATE, CTX_AWAITING_MANUAL_DATE, CTX_LAST_QUERY,
     CTX_AWAITING_DEFAULT_QUERY, CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE,
+    CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME, CTX_AWAITING_FEEDBACK, CTX_KEYBOARD_MESSAGE_ID,
     CALLBACK_DATA_MODE_STUDENT, CALLBACK_DATA_MODE_TEACHER, CALLBACK_DATA_BACK_TO_START,
     CALLBACK_DATA_SETTINGS_MENU, CALLBACK_DATA_CANCEL_INPUT, CALLBACK_DATA_CONFIRM_MODE,
     CALLBACK_DATA_DATE_TODAY, CALLBACK_DATA_DATE_TOMORROW,
-    MODE_STUDENT, ENTITY_GROUP, ENTITY_TEACHER, CallbackData,
+    MODE_STUDENT, ENTITY_GROUP, ENTITY_TEACHER, CallbackData, DEFAULT_NOTIFICATION_TIME,
 )
-from ..admin.utils import is_bot_enabled, get_maintenance_message
+from ..admin.utils import is_bot_enabled, get_maintenance_message, is_admin
 from ..state_manager import (
     clear_temporary_states, safe_get_user_data, is_user_busy, set_user_busy
 )
@@ -123,7 +124,6 @@ async def _apply_default_selection(
 
 async def _check_bot_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Проверяет статус бота. Возвращает True если бот доступен."""
-    from ..admin.utils import is_admin
     user_id = update.effective_user.id
     is_admin_user = is_admin(user_id)
     if not is_admin_user and not is_bot_enabled():
@@ -278,7 +278,9 @@ async def _handle_input_states(update: Update, context: ContextTypes.DEFAULT_TYP
     """Обрабатывает состояния ожидания ввода. Возвращает True если сообщение обработано."""
     user_data = context.user_data
 
+    # ВАЖНО: Если ожидается ввод группы, очищаем CTX_AWAITING_FEEDBACK, чтобы избежать конфликта
     if safe_get_user_data(user_data, CTX_AWAITING_DEFAULT_QUERY):
+        user_data.pop(CTX_AWAITING_FEEDBACK, None)
         try:
             await handle_default_query_input(update, context, text)
         except Exception as e:
@@ -325,42 +327,60 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         if await _handle_admin_reply(update, context, text):
             return
 
-        # 3. Обработка отзыва
-        if await _handle_feedback(update, context, text):
-            return
-
-        # 4. Проверка занятости
+        # 3. Проверка занятости
         if is_user_busy(user_data):
             await update.message.reply_text("⏳ Пожалуйста, подождите, я обрабатываю предыдущий запрос...")
             return
 
-        # 5. Обработка команд
+        # 4. Обработка команд
         if await _handle_commands(update, context, text):
             return
 
-        # 6. Загружаем данные из БД при первом обращении
-        if not safe_get_user_data(user_data, CTX_DEFAULT_QUERY):
+        # 5. Загружаем данные из БД при первом обращении (для всех пользователей)
+        # Проверяем, загружены ли данные (есть ли хотя бы один ключ из БД)
+        if not any(key in user_data for key in [CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE, CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME]):
             try:
                 load_user_data_from_db(user_id, user_data)
             except Exception as e:
                 logger.error(f"Ошибка при загрузке данных пользователя: {e}", exc_info=True)
                 # Продолжаем работу, даже если не удалось загрузить данные
 
-        # 7. Умный холодный старт
-        if await _handle_cold_start(update, context, text):
-            return
+        # 6. Проверка на отмену (высокий приоритет - до обработки расписания)
+        lowered = text.strip().lower()
+        cleaned_text = lowered.replace("❌", "").replace("⛔", "").strip()
+        is_cancel = cleaned_text in {"отмена", "cancel", "/cancel"} or lowered in {"отмена", "cancel", "/cancel", "❌ отмена", "❌отмена"}
+        
+        if is_cancel:
+            # Если есть активное состояние ожидания ввода, обрабатываем отмену в соответствующих обработчиках
+            if user_data.get(CTX_AWAITING_DEFAULT_QUERY) or user_data.get(CTX_AWAITING_FEEDBACK):
+                # Обработка отмены будет в соответствующих обработчиках
+                pass
+            else:
+                # Если нет активного состояния, просто возвращаемся в меню
+                await start_command(update, context)
+                return
 
-        # 8. Обработка состояний ожидания ввода
+        # 7. Обработка состояний ожидания ввода (должна идти ПЕРЕД обработкой отзыва!)
+        # ВАЖНО: Проверка CTX_AWAITING_DEFAULT_QUERY должна быть до поиска расписания и отзыва
         if await _handle_input_states(update, context, text):
             return
 
-        # 9. Поиск расписания (fallback)
-        try:
-            await handle_schedule_search(update, context, text)
-        except Exception as e:
-            logger.error(f"Ошибка в handle_schedule_search: {e}", exc_info=True)
-            await update.message.reply_text("❌ Произошла ошибка при поиске расписания.")
-            clear_temporary_states(user_data)
+        # 8. Обработка отзыва (после состояний ввода, чтобы не перехватывать ввод группы)
+        if await _handle_feedback(update, context, text):
+            return
+
+        # 9. Умный холодный старт
+        if await _handle_cold_start(update, context, text):
+            return
+
+        # 10. Поиск расписания (fallback) - только если это не отмена
+        if not is_cancel:
+            try:
+                await handle_schedule_search(update, context, text)
+            except Exception as e:
+                logger.error(f"Ошибка в handle_schedule_search: {e}", exc_info=True)
+                await update.message.reply_text("❌ Произошла ошибка при поиске расписания.")
+                clear_temporary_states(user_data)
 
     except Exception as e:
         # Общая обработка ошибок для всей функции
@@ -388,10 +408,41 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
     username = update.effective_user.username or "без username"
     user_data = context.user_data
 
+    # ВАЖНО: Очищаем CTX_AWAITING_FEEDBACK, чтобы избежать конфликта с обработкой отзыва
+    user_data.pop(CTX_AWAITING_FEEDBACK, None)
+
     lowered = text.strip().lower()
-    if lowered in {"отмена", "cancel", "/cancel"}:
+    # Обрабатываем как текстовый ввод "отмена", так и Reply-кнопку "❌ Отмена"
+    # Убираем эмодзи и пробелы для проверки
+    cleaned_text = lowered.replace("❌", "").replace("⛔", "").strip()
+    if cleaned_text in {"отмена", "cancel", "/cancel"} or lowered in {"отмена", "cancel", "/cancel", "❌ отмена", "❌отмена"}:
         user_data.pop(CTX_AWAITING_DEFAULT_QUERY, None)
-        await update.message.reply_text("❌ Установка по умолчанию отменена.")
+        
+        # Удаляем сообщение со стикером клавиатуры, если оно было отправлено
+        keyboard_message_id = user_data.pop(CTX_KEYBOARD_MESSAGE_ID, None)
+        if keyboard_message_id:
+            try:
+                await context.bot.delete_message(
+                    chat_id=update.message.chat_id,
+                    message_id=keyboard_message_id
+                )
+            except Exception as e:
+                logger.debug(f"Ошибка при удалении сообщения со стикером: {e}")
+        
+        # Убираем Reply-кнопку отмены, отправляя пустое сообщение и сразу удаляя его
+        try:
+            temp_msg = await update.message.reply_text(" ", reply_markup=ReplyKeyboardRemove())
+            await asyncio.sleep(0.2)
+            try:
+                await context.bot.delete_message(
+                    chat_id=update.message.chat_id,
+                    message_id=temp_msg.message_id
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug(f"Ошибка при удалении Reply-клавиатуры: {e}")
+        
         await settings_menu_callback(update, context)
         return
 
@@ -411,7 +462,7 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
         return
 
     # Используем context manager для автоматического управления блокировкой
-    with user_busy_context(user_data):
+    async with user_busy_context(user_data):
         mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
         logger.info(f"⚙️ [{user_id}] @{username} → Устанавливает {mode_text} по умолчанию: '{text}'")
 
@@ -441,10 +492,19 @@ async def handle_default_query_input(update: Update, context: ContextTypes.DEFAU
 
             await _apply_default_selection(update, context, match, mode, source="message")
 
+            # Убираем Reply-клавиатуру отмены после успешного ввода
+            try:
+                await update.message.reply_text(
+                    f"✅ Вы установили {mode_text}: <b>{escape_html(match)}</b>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=ReplyKeyboardRemove()
+                )
+            except Exception as e:
+                logger.debug(f"Ошибка при удалении Reply-клавиатуры: {e}")
+
             if is_new_user:
                 # Для новых пользователей показываем сообщение об успешной установке и настройки
                 success_msg = await update.message.reply_text(
-                    f"✅ Вы установили {mode_text}: <b>{escape_html(match)}</b>\n\n"
                     f"Теперь вы будете получать ежедневные уведомления о расписании.",
                     parse_mode=ParseMode.HTML
                 )
@@ -554,7 +614,7 @@ async def handle_quick_date_callback(update: Update, context: ContextTypes.DEFAU
 
     # Загружаем расписание
     api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
-    with user_busy_context(user_data):
+    async with user_busy_context(user_data):
         pages, err = await safe_get_schedule(date.strftime("%Y-%m-%d"), query, api_type)
         if err or not pages:
             await update.callback_query.message.reply_text(

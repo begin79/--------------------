@@ -181,7 +181,7 @@ async def admin_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(text, reply_markup=kbd, parse_mode=ParseMode.HTML)
 
 async def admin_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Детальная статистика"""
+    """Детальная статистика с аналитикой"""
     if not update.effective_user or not is_admin(update.effective_user.id):
         return
 
@@ -189,25 +189,36 @@ async def admin_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     admin_db.update_statistics_cache()
     stats = admin_db.get_statistics()
 
-    # Получаем дополнительную статистику
+    # Получаем аналитику использования
     try:
+        from ..analytics import analytics
         from ..database import db
+        from ..monitoring import monitor
+        from ..rate_limiter import rate_limiter
+        
+        if analytics is None:
+            # Инициализируем аналитику если еще не инициализирована
+            from ..analytics import init_analytics
+            init_analytics(db, monitor)
+        
+        usage_stats = analytics.get_usage_stats()
+        growth_stats = analytics.get_growth_stats()
+        rate_limit_stats = rate_limiter.get_stats()
+        
         all_users = db.get_all_users()
-
-        # Пользователи с уведомлениями
         users_with_notifications = sum(1 for u in all_users if u.get('daily_notifications'))
-
+        
         # Самые активные пользователи
         from datetime import datetime, timedelta
         active_users = [u for u in all_users if u.get('last_active')]
         active_users.sort(key=lambda x: x.get('last_active', ''), reverse=True)
         top_active = active_users[:5]
 
-        # Популярные группы/преподаватели (из activity_log)
-        # Это можно расширить позже
-
     except Exception as e:
-        logger.error(f"Ошибка получения дополнительной статистики: {e}")
+        logger.error(f"Ошибка получения аналитики: {e}", exc_info=True)
+        usage_stats = None
+        growth_stats = None
+        rate_limit_stats = None
         users_with_notifications = 0
         top_active = []
 
@@ -216,10 +227,28 @@ async def admin_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         f"👥 <b>Пользователи:</b>\n"
         f"   • Всего: {stats['total_users']}\n"
         f"   • Активных за 24ч: {stats['active_users_24h']}\n"
-        f"   • С уведомлениями: {users_with_notifications}\n\n"
+        f"   • Активных за 7 дней: {usage_stats.active_users_7d if usage_stats else 'N/A'}\n"
+        f"   • С уведомлениями: {users_with_notifications}\n"
+        f"   • Новых за 7 дней: {growth_stats['new_users_last_7d'] if growth_stats else 'N/A'}\n\n"
         f"📝 <b>Активность:</b>\n"
-        f"   • Всего запросов: {stats['total_requests']}\n\n"
+        f"   • Запросов за 24ч: {usage_stats.total_requests_24h if usage_stats else stats['total_requests']}\n"
+        f"   • Запросов за 7 дней: {usage_stats.total_requests_7d if usage_stats else 'N/A'}\n"
+        f"   • Пиковый час: {usage_stats.peak_hour if usage_stats else 'N/A'}:00\n\n"
     )
+    
+    if usage_stats and usage_stats.popular_queries:
+        text += f"🔥 <b>Популярные запросы:</b>\n"
+        for query, count in usage_stats.popular_queries[:5]:
+            text += f"   • {escape_html(query)}: {count}\n"
+        text += "\n"
+    
+    if rate_limit_stats:
+        text += (
+            f"🚦 <b>Rate Limiting:</b>\n"
+            f"   • Всего запросов: {rate_limit_stats.total_requests}\n"
+            f"   • Заблокировано: {rate_limit_stats.blocked_requests}\n"
+            f"   • Активных пользователей: {rate_limit_stats.active_users}\n\n"
+        )
 
     if top_active:
         text += f"🏆 <b>Топ-5 активных пользователей:</b>\n"

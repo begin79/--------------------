@@ -5,19 +5,22 @@ import datetime
 import logging
 from typing import Dict, List, Optional
 from io import BytesIO
-from pathlib import Path
 
 from .schedule import get_schedule_structured
 from .constants import API_TYPE_TEACHER
 
 logger = logging.getLogger(__name__)
 
-# Пути к ресурсам
-BASE_DIR = Path(__file__).parent.parent
-LOGO_PATH = BASE_DIR / "фото" / "ВГЛТУ(3.png"
-# <<< ИСПРАВЛЕНО: Добавляем путь к папке со шрифтами
-FONTS_PATH = BASE_DIR / "fonts"
-# <<< ИСПРАВЛЕНО: Указываем путь к конкретному файлу шрифта
+# Пути к ресурсам (используем из config для единообразия)
+from .config import FONTS_DIR, ASSETS_DIR
+# Поддерживаем разные форматы логотипа
+LOGO_PATH = None
+for logo_name in ["лого.jpg", "лого.png", "logo.jpg", "logo.png"]:
+    logo_path = ASSETS_DIR / logo_name
+    if logo_path.exists():
+        LOGO_PATH = logo_path
+        break
+FONTS_PATH = FONTS_DIR
 DEFAULT_FONT_PATH = FONTS_PATH / "DejaVuSans.ttf"
 DEFAULT_FONT_BOLD_PATH = FONTS_PATH / "DejaVuSans-Bold.ttf"
 
@@ -112,7 +115,7 @@ async def get_day_schedule_structured(entity_name: str, entity_type: str, date: 
 
 def format_week_schedule_text(week_schedule: Dict[str, List[Dict]], entity_name: str, entity_type: str) -> str:
     """Форматирует расписание на неделю в текстовую таблицу"""
-    from .utils import escape_html
+    from .utils import escape_html, get_pair_type_emoji
     weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"]
 
     entity_label = "преподавателя" if entity_type == API_TYPE_TEACHER else "группы"
@@ -142,9 +145,10 @@ def format_week_schedule_text(week_schedule: Dict[str, List[Dict]], entity_name:
             groups = ", ".join(pair.get("groups", []))
             auditorium = escape_html(pair.get("auditorium", "-"))
             teacher = escape_html(pair.get("teacher", ""))
+            subject_emoji = get_pair_type_emoji(subject)
 
             lines.append(f"\n⏰ <b>{time}</b>")
-            lines.append(f"📖 {subject}")
+            lines.append(f"{subject_emoji} {subject}")
             if groups:
                 lines.append(f"👥 Группы: {groups}")
             if auditorium and auditorium != "-":
@@ -290,13 +294,13 @@ async def generate_schedule_image(week_schedule: Dict[str, List[Dict]], entity_n
         NUM_COLUMNS = 2
 
         try:
-            # Оптимальные размеры шрифтов для читаемости
+            # Увеличиваем размеры шрифтов для лучшей читаемости
             title_font = ImageFont.truetype(str(DEFAULT_FONT_BOLD_PATH), 48)
-            name_font = ImageFont.truetype(str(DEFAULT_FONT_BOLD_PATH), 36)
-            day_font = ImageFont.truetype(str(DEFAULT_FONT_BOLD_PATH), 32)
-            content_font = ImageFont.truetype(str(DEFAULT_FONT_PATH), 28)
-            time_font = ImageFont.truetype(str(DEFAULT_FONT_BOLD_PATH), 26)
-            info_font = ImageFont.truetype(str(DEFAULT_FONT_PATH), 24)  # Для групп, аудитории, преподавателя
+            name_font = ImageFont.truetype(str(DEFAULT_FONT_BOLD_PATH), 40)
+            day_font = ImageFont.truetype(str(DEFAULT_FONT_BOLD_PATH), 42)
+            content_font = ImageFont.truetype(str(DEFAULT_FONT_PATH), 36)
+            time_font = ImageFont.truetype(str(DEFAULT_FONT_BOLD_PATH), 34)
+            info_font = ImageFont.truetype(str(DEFAULT_FONT_PATH), 32)  # Для групп, аудитории, преподавателя
         except Exception:
             logger.warning("Не удалось загрузить кастомные шрифты.")
             title_font = ImageFont.load_default()
@@ -307,13 +311,13 @@ async def generate_schedule_image(week_schedule: Dict[str, List[Dict]], entity_n
             info_font = ImageFont.load_default()
 
         # Параметры макета: две колонки с достаточной шириной
-        # Уменьшаем внешние отступы и расстояния, чтобы «пустые поля» по краям были меньше
-        width = 3800  # Чуть уже, чтобы плотнее упаковать контент
-        padding = 48
-        column_spacing = 40  # Расстояние между колонками
-        card_padding = 40
-        day_spacing = 30  # Расстояние между днями в колонке
-        pair_spacing = 20  # Отступ между парами
+        # Увеличиваем ширину для лучшей читаемости с увеличенными шрифтами
+        width = 2800  # Оптимальная ширина для увеличенных шрифтов
+        padding = 60
+        column_spacing = 50  # Расстояние между колонками
+        card_padding = 50
+        day_spacing = 40  # Расстояние между днями в колонке
+        pair_spacing = 30  # Отступ между парами
 
         # Ширина одной колонки (карточки дня)
         card_width = (width - 2 * padding - column_spacing) // NUM_COLUMNS
@@ -324,9 +328,9 @@ async def generate_schedule_image(week_schedule: Dict[str, List[Dict]], entity_n
         day_contents = {}
         valid_days = []
 
-        # Заголовок дня (фиксированная высота)
-        day_header_height = 70
-        day_header_gap = 20  # Отступ под плашкой дня (учитываем в расчёте высоты)
+        # Заголовок дня (фиксированная высота) - увеличиваем для увеличенных шрифтов
+        day_header_height = 90
+        day_header_gap = 25  # Отступ под плашкой дня (учитываем в расчёте высоты)
 
         # Сначала определяем, какие дни недели имеют пары
         # ВАЖНО: Вычисляем понедельник на основе дат из week_schedule, а не текущей даты
@@ -476,18 +480,27 @@ async def generate_schedule_image(week_schedule: Dict[str, List[Dict]], entity_n
         # Высота заголовка (динамическая, на основе реальных размеров)
         # Рассчитываем реальную высоту заголовка
         header_height_calc = padding
-        if LOGO_PATH.exists():
-            # Увеличиваем логотип, но оставляем достаточный отступ
-            header_height_calc += 110 + 16  # Логотип (110px) + отступ (16px)
+        logo_size = 0
+        if LOGO_PATH and LOGO_PATH.exists():
+            logo_size = 100  # Размер логотипа справа сверху
+            # Логотип справа, заголовок слева - берем максимальную высоту
+            header_height_calc = max(logo_size + padding, header_height_calc)
         # Заголовок "Расписание для группы"
         entity_label_text = "преподавателя" if entity_type == API_TYPE_TEACHER else "группы"
         title_text_calc = f"Расписание для {entity_label_text}"
         title_bbox_calc = title_font.getbbox(title_text_calc)
-        header_height_calc += title_bbox_calc[3] + 10
-        # Название группы
-        name_bbox_calc = name_font.getbbox(entity_name)
-        header_height_calc += name_bbox_calc[3] + 15
-        header_height_calc += padding  # Нижний отступ заголовка
+        # Если есть логотип, заголовок и название группы размещаются слева, логотип справа
+        if logo_size > 0:
+            # Высота = максимум из (логотип + отступ) и (заголовок + название + отступы)
+            text_height = title_bbox_calc[3] + 10
+            name_bbox_calc = name_font.getbbox(entity_name)
+            text_height += name_bbox_calc[3] + 15
+            header_height_calc = max(logo_size + padding, text_height + padding) + padding
+        else:
+            header_height_calc += title_bbox_calc[3] + 10
+            name_bbox_calc = name_font.getbbox(entity_name)
+            header_height_calc += name_bbox_calc[3] + 15
+            header_height_calc += padding  # Нижний отступ заголовка
 
         # Общая высота изображения
         height = header_height_calc + content_height + padding
@@ -496,22 +509,45 @@ async def generate_schedule_image(week_schedule: Dict[str, List[Dict]], entity_n
         img = Image.new('RGB', (width, height), color=BG_COLOR)
         draw = ImageDraw.Draw(img)
 
-        # 1. Глобальный заголовок
+        # 1. Глобальный заголовок с логотипом справа сверху
         y_header = padding
-        if LOGO_PATH.exists():
-            logo_img = Image.open(LOGO_PATH).resize((110, 110), Image.Resampling.LANCZOS)
-            img.paste(logo_img, ((width - logo_img.width) // 2, y_header), logo_img)
-            y_header += logo_img.height + 16
+        logo_img = None
+        if LOGO_PATH and LOGO_PATH.exists():
+            # Логотип справа сверху (более профессиональный вид)
+            logo_img = Image.open(LOGO_PATH).resize((100, 100), Image.Resampling.LANCZOS)
+            # Конвертируем в RGBA для поддержки прозрачности
+            if logo_img.mode != 'RGBA':
+                logo_img = logo_img.convert('RGBA')
+            # Убираем белый фон (делаем прозрачным)
+            data = logo_img.getdata()
+            new_data = []
+            for item in data:
+                # Если пиксель белый или почти белый, делаем его прозрачным
+                if item[0] > 240 and item[1] > 240 and item[2] > 240:
+                    new_data.append((item[0], item[1], item[2], 0))
+                else:
+                    new_data.append(item)
+            logo_img.putdata(new_data)
+            logo_x = width - logo_img.width - padding
+            logo_y = padding
+            img.paste(logo_img, (logo_x, logo_y), logo_img)
 
+        # Заголовок и название группы слева
         entity_label = "преподавателя" if entity_type == API_TYPE_TEACHER else "группы"
         title_text = f"Расписание для {entity_label}"
         title_bbox = title_font.getbbox(title_text)
-        draw.text(((width - title_bbox[2]) / 2, y_header), title_text, fill=TEXT_COLOR, font=title_font)
+        draw.text((padding, y_header), title_text, fill=TEXT_COLOR, font=title_font)
         y_header += title_bbox[3] + 10
 
         name_bbox = name_font.getbbox(entity_name)
-        draw.text(((width - name_bbox[2]) / 2, y_header), entity_name, fill=TEXT_COLOR, font=name_font)
+        draw.text((padding, y_header), entity_name, fill=TEXT_COLOR, font=name_font)
         y_header += name_bbox[3] + 15
+        
+        # Если есть логотип, заголовок должен быть на той же высоте или ниже логотипа
+        if logo_img:
+            header_bottom = y_header
+            logo_bottom = padding + logo_img.height
+            y_header = max(header_bottom, logo_bottom) + padding
 
         # 2. Отрисовка двух колонок
         # base_y должен совпадать с расчетом header_height_calc (y_header после отрисовки заголовка)
@@ -679,9 +715,23 @@ async def generate_day_schedule_image(day_schedule: Dict, entity_name: str, enti
         # --- Динамический подсчет высоты ---
         y = padding
         logo_img = None
-        if LOGO_PATH.exists():
+        if LOGO_PATH and LOGO_PATH.exists():
             logo_img = Image.open(LOGO_PATH).resize((100, 100), Image.Resampling.LANCZOS)
-            y += logo_img.height + 20
+            # Конвертируем в RGBA для поддержки прозрачности
+            if logo_img.mode != 'RGBA':
+                logo_img = logo_img.convert('RGBA')
+            # Убираем белый фон (делаем прозрачным)
+            data = logo_img.getdata()
+            new_data = []
+            for item in data:
+                # Если пиксель белый или почти белый, делаем его прозрачным
+                if item[0] > 240 and item[1] > 240 and item[2] > 240:
+                    new_data.append((item[0], item[1], item[2], 0))
+                else:
+                    new_data.append(item)
+            logo_img.putdata(new_data)
+            # Логотип справа, заголовок слева - берем максимальную высоту
+            y = max(logo_img.height + padding, y)
         y += 50 + 40 + 30 # Заголовки
         y += card_padding + 50 + 15 # Отступ, заголовок дня, отступ
         for pair in pairs:
@@ -699,21 +749,32 @@ async def generate_day_schedule_image(day_schedule: Dict, entity_name: str, enti
         img = Image.new('RGB', (width, height), color=BG_COLOR)
         draw = ImageDraw.Draw(img)
 
-        # 1. Заголовок
+        # 1. Заголовок с логотипом справа сверху
         y = padding
         if logo_img:
-            img.paste(logo_img, ((width - logo_img.width) // 2, y), logo_img)
-            y += logo_img.height + 20
+            # Логотип справа сверху
+            logo_x = width - logo_img.width - padding
+            logo_y = padding
+            img.paste(logo_img, (logo_x, logo_y), logo_img if logo_img.mode == 'RGBA' else None)
 
+        # Заголовок и название слева
         entity_label = "преподавателя" if entity_type == API_TYPE_TEACHER else "группы"
         title_text = f"Расписание для {entity_label}"
+        draw.text((padding, y), title_text, fill=TEXT_COLOR, font=title_font)
         title_bbox = title_font.getbbox(title_text)
-        draw.text(((width - title_bbox[2]) / 2, y), title_text, fill=TEXT_COLOR, font=title_font)
-        y += 50
+        y += title_bbox[3] + 10
 
+        draw.text((padding, y), entity_name, fill=TEXT_COLOR, font=name_font)
         name_bbox = name_font.getbbox(entity_name)
-        draw.text(((width - name_bbox[2]) / 2, y), entity_name, fill=TEXT_COLOR, font=name_font)
-        y += 40 + 30
+        y += name_bbox[3] + 10
+        
+        # Если есть логотип, заголовок должен быть на той же высоте или ниже логотипа
+        if logo_img:
+            header_bottom = y
+            logo_bottom = padding + logo_img.height
+            y = max(header_bottom, logo_bottom) + 30
+        else:
+            y += 30
 
         # 2. Белая карточка
         card_x, card_y = padding, y
@@ -855,36 +916,59 @@ async def generate_week_schedule_file(week_schedule: Dict[str, List[Dict]], enti
         story = []
         from .utils import escape_html
 
-        # --- HEADER (с ФИО преподавателя) ---
-        if LOGO_PATH.exists():
-            logo = Image(str(LOGO_PATH), width=35*mm, height=35*mm)
-            logo.hAlign = 'CENTER'
-            story.append(logo)
-            story.append(Spacer(1, 8*mm))
-
+        # --- HEADER (с логотипом справа сверху) ---
         entity_label = "преподавателя" if entity_type == API_TYPE_TEACHER else "группы"
+        
+        if LOGO_PATH and LOGO_PATH.exists():
+            # Создаем таблицу для размещения логотипа справа и заголовка слева
+            from reportlab.platypus import Table, TableStyle
+            
+            # Логотип справа
+            logo = Image(str(LOGO_PATH), width=30*mm, height=30*mm)
+            
+            # Таблица: слева текст, справа логотип
+            header_data = [
+                [
+                    Paragraph(f"<b>Расписание для {entity_label}</b><br/>{escape_html(entity_name)}", 
+                             ParagraphStyle('Header', fontName=FONT_NAME_BOLD, fontSize=20, 
+                                          textColor=colors.black, leading=24)),
+                    logo
+                ]
+            ]
+            header_table = Table(header_data, colWidths=[None, 35*mm])
+            header_table.setStyle(TableStyle([
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+                ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                ('TOPPADDING', (0, 0), (-1, -1), 0),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+            ]))
+            story.append(header_table)
+            story.append(Spacer(1, 10*mm))
+        else:
+            # Если нет логотипа, используем старый вариант по центру
+            title_style = ParagraphStyle(
+                'MainTitle',
+                fontName=FONT_NAME_BOLD,
+                fontSize=28,
+                textColor=colors.black,
+                alignment=TA_CENTER,
+                spaceAfter=2*mm,
+                leading=34
+            )
+            story.append(Paragraph(f"Расписание для {entity_label}", title_style))
 
-        # Основной заголовок
-        title_style = ParagraphStyle(
-            'MainTitle',
-            fontName=FONT_NAME_BOLD,
-            fontSize=28,
-            textColor=colors.black,
-            alignment=TA_CENTER,
-            spaceAfter=2*mm,
-            leading=34
-        )
-        story.append(Paragraph(f"Расписание для {entity_label}", title_style))
-
-        # Подзаголовок с ФИО
-        name_style = ParagraphStyle(
-            'NameTitle',
-            parent=title_style,
-            fontName=FONT_NAME_BOLD, # Оставляем жирным для важности
-            fontSize=20, # Но делаем чуть меньше
-            spaceAfter=15*mm
-        )
-        story.append(Paragraph(escape_html(entity_name), name_style))
+            # Подзаголовок с ФИО
+            name_style = ParagraphStyle(
+                'NameTitle',
+                parent=title_style,
+                fontName=FONT_NAME_BOLD,
+                fontSize=20,
+                spaceAfter=15*mm
+            )
+            story.append(Paragraph(escape_html(entity_name), name_style))
 
         # --- СТИЛИ ДЛЯ РАСПИСАНИЯ ---
         # ИЗМЕНЕНИЕ: alignment теперь TA_CENTER

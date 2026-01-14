@@ -18,6 +18,18 @@ class BotMode(str, Enum):
 # Эмодзи для нумерации пар
 PAIR_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣"]
 
+# Эмодзи для типов пар
+PAIR_TYPE_EMOJIS = {
+    "лекция": "📚",
+    "практика": "✏️",
+    "лабораторная": "🔬",
+    "семинар": "💬",
+    "зачет": "📝",
+    "экзамен": "📋",
+    "консультация": "💡",
+    "default": "📖"  # По умолчанию для предмета
+}
+
 # Регулярные выражения
 GROUP_NAME_PATTERN = r"\b[А-Я0-9]+-\d{1,3}(?:-[А-Я]+)?\b"
 SUBGROUP_PATTERN = r"([а-яА-Я])(\d)"
@@ -80,6 +92,7 @@ CALLBACK_DATA_EXPORT_MENU = CallbackData.EXPORT_MENU.value
 CALLBACK_DATA_EXPORT_DAY_IMAGE = CallbackData.EXPORT_DAY_IMAGE.value
 CALLBACK_DATA_EXPORT_DAYS_IMAGES = CallbackData.EXPORT_DAYS_IMAGES.value
 CALLBACK_DATA_EXPORT_SEMESTER = CallbackData.EXPORT_SEMESTER.value
+CALLBACK_DATA_BACK_TO_SCHEDULE = CallbackData.BACK_TO_SCHEDULE.value
 # CALLBACK_DATA_TEACHER_PHOTO = CallbackData.TEACHER_PHOTO.value  # Не используется
 # CALLBACK_DATA_TEACHER_PROFILE = CallbackData.TEACHER_PROFILE.value  # Не используется
 CALLBACK_DATA_FEEDBACK = CallbackData.FEEDBACK.value
@@ -106,6 +119,7 @@ class UserContextKey(str, Enum):
     SCHEDULE_PAGES = "ctx_schedule_pages"
     CURRENT_PAGE_INDEX = "ctx_current_page_index"
     AWAITING_DEFAULT_QUERY = "ctx_awaiting_default_query"
+    AWAITING_FEEDBACK = "ctx_awaiting_feedback"
     DEFAULT_QUERY = "ctx_default_query"
     DEFAULT_MODE = "ctx_default_mode"
     DAILY_NOTIFICATIONS = "ctx_daily_notifications"
@@ -113,6 +127,7 @@ class UserContextKey(str, Enum):
     IS_BUSY = "ctx_is_busy"  # Для блокировки одновременных запросов
     REPLY_KEYBOARD_PINNED = "ctx_reply_keyboard_pinned"
     FOUND_ENTITIES = "ctx_found_entities"  # Список найденных вариантов для выбора
+    KEYBOARD_MESSAGE_ID = "ctx_keyboard_message_id"  # ID сообщения со стикером клавиатуры
 
 # Для обратной совместимости
 CTX_MODE = UserContextKey.MODE.value
@@ -122,6 +137,7 @@ CTX_LAST_QUERY = UserContextKey.LAST_QUERY.value
 CTX_SCHEDULE_PAGES = UserContextKey.SCHEDULE_PAGES.value
 CTX_CURRENT_PAGE_INDEX = UserContextKey.CURRENT_PAGE_INDEX.value
 CTX_AWAITING_DEFAULT_QUERY = UserContextKey.AWAITING_DEFAULT_QUERY.value
+CTX_AWAITING_FEEDBACK = UserContextKey.AWAITING_FEEDBACK.value
 CTX_DEFAULT_QUERY = UserContextKey.DEFAULT_QUERY.value
 CTX_DEFAULT_MODE = UserContextKey.DEFAULT_MODE.value
 CTX_DAILY_NOTIFICATIONS = UserContextKey.DAILY_NOTIFICATIONS.value
@@ -129,6 +145,7 @@ CTX_NOTIFICATION_TIME = UserContextKey.NOTIFICATION_TIME.value
 CTX_IS_BUSY = UserContextKey.IS_BUSY.value
 CTX_REPLY_KEYBOARD_PINNED = UserContextKey.REPLY_KEYBOARD_PINNED.value
 CTX_FOUND_ENTITIES = UserContextKey.FOUND_ENTITIES.value
+CTX_KEYBOARD_MESSAGE_ID = UserContextKey.KEYBOARD_MESSAGE_ID.value
 
 # Магические строки - режимы работы
 MODE_STUDENT = BotMode.STUDENT.value  # "student"
@@ -147,5 +164,9 @@ DEFAULT_NOTIFICATION_TIME = "21:00"
 
 # Магические строки - префиксы для задач
 JOB_PREFIX_DAILY_SCHEDULE = "daily_schedule_"
+
+# Лимиты для поиска и отображения
+MAX_SEARCH_RESULTS_DISPLAY = 20  # Максимальное количество результатов поиска для отображения
+MAX_INLINE_RESULTS = 10  # Максимальное количество результатов в inline-режиме
 
 

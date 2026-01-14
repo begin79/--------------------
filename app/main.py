@@ -11,12 +11,12 @@ try:
 except ImportError:
     logging.error("Не удалось импортировать config.py")
     raise
-# Импортируем из новых модулей
+# Импортируем из handlers
 from .handlers.start import start_command
 from .handlers.help import help_command_handler
 from .handlers.settings import settings_menu_callback
 from .handlers.text import handle_text_message
-from .handlers.callbacks import callback_router, inline_query_handler
+from .callbacks import callback_router, inline_query_handler
 from .jobs import check_schedule_changes_job
 from .http import close_http_client
 from .admin.database import admin_db
@@ -310,8 +310,19 @@ async def initialize_active_users(context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Специальная обработка для Conflict - не выводим полный traceback
     if isinstance(context.error, Conflict):
-        logger.warning("⚠️ Обнаружен конфликт: уже запущен другой экземпляр бота. "
-                      "Убедитесь, что запущен только один экземпляр бота.")
+        logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Обнаружен конфликт - уже запущен другой экземпляр бота!")
+        logger.error("   Telegram API не позволяет запускать несколько экземпляров бота с одним токеном одновременно.")
+        logger.error("   Действия:")
+        logger.error("   1. Остановите другой экземпляр бота (на сервере или в другом терминале)")
+        logger.error("   2. Подождите 5-10 секунд")
+        logger.error("   3. Перезапустите бота")
+        logger.error("   Бот будет остановлен для предотвращения проблем.")
+        # Останавливаем приложение при конфликте
+        if context.application:
+            try:
+                await context.application.stop()
+            except Exception as e:
+                logger.error(f"Ошибка при остановке приложения: {e}")
         return
 
     # Специальная обработка для TimedOut
@@ -386,10 +397,30 @@ def build_app() -> Application:
         app.job_queue.run_repeating(
             check_schedule_changes_job, interval=5400, first=60, name="check_schedule_changes"
         )
+        # Очистка bot_data каждый час для предотвращения утечек памяти
+        from .jobs import cleanup_bot_data_job
+        app.job_queue.run_repeating(
+            cleanup_bot_data_job, interval=3600, first=300, name="cleanup_bot_data"
+        )
+        # Автоматическое резервное копирование базы данных (каждые 24 часа)
+        from .jobs import automatic_backup_job
+        app.job_queue.run_repeating(
+            automatic_backup_job, interval=86400, first=3600, name="automatic_backup"
+        )
 
     # Добавляем задачу инициализации при старте (выполнится сразу после запуска)
     if app.job_queue:
         app.job_queue.run_once(initialize_active_users, when=0)
+    
+    # Инициализируем аналитику
+    try:
+        from .analytics import init_analytics
+        from .database import db
+        from .monitoring import monitor
+        init_analytics(db, monitor)
+        logger.info("✅ Аналитика инициализирована")
+    except Exception as e:
+        logger.warning(f"Не удалось инициализировать аналитику: {e}")
 
     return app
 
@@ -427,8 +458,19 @@ def main() -> None:
     logger.info("Бот запускается...")
     logger.info("💡 Совет: Если видите ошибку 'Conflict', значит уже запущен другой экземпляр бота.")
     logger.info("   Закройте все другие экземпляры и запустите бота снова.")
+    logger.info("   Проверьте:")
+    logger.info("   - Другие окна терминала с запущенным ботом")
+    logger.info("   - Бот на сервере (Amvera/другой хостинг)")
+    logger.info("   - Службы Windows, которые могут запускать бота")
     try:
-        app.run_polling()
+        app.run_polling(
+            drop_pending_updates=True,  # Игнорируем накопленные обновления при старте
+            allowed_updates=None  # Получаем все типы обновлений
+        )
+    except Conflict as e:
+        logger.critical(f"❌ Конфликт при запуске: {e}")
+        logger.critical("   Остановите другой экземпляр бота и попробуйте снова.")
+        return
     except KeyboardInterrupt:
         logger.info("Получен сигнал остановки")
     finally:

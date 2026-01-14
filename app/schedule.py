@@ -1,6 +1,7 @@
 import re
 import logging
 import datetime
+import time as time_module
 from typing import List, Tuple, Optional, Literal, Dict
 from bs4 import BeautifulSoup
 from urllib.parse import quote
@@ -14,9 +15,19 @@ from .constants import (
     SUBGROUP_PATTERN,
     PAIR_EMOJIS,
 )
+from .utils import get_pair_type_emoji
 from .http import make_request_with_retry
+from .monitoring import monitor
 
 logger = logging.getLogger(__name__)
+
+# Выносим селекторы в константы для легкого изменения при смене верстки
+SELECTOR_SCHEDULE_DIV_STYLE = "margin-bottom: 25px"
+SELECTOR_DATE_STRONG = "strong"
+SELECTOR_NO_PAIRS_TEXTS = ["занятий нет", "нет занятий", "расписание отсутствует"]
+
+class LayoutChangedError(Exception):
+    pass
 
 # Увеличенные размеры кешей для работы с большим количеством пользователей
 schedule_cache = TTLCache(maxsize=500, ttl=600)  # Увеличено с 100 до 500
@@ -63,7 +74,17 @@ def parse_date_from_html(day_date_str: str) -> Optional[datetime.date]:
         logger.warning(f"Ошибка при парсинге даты из '{day_date_str}': {e}")
     return None
 
-async def get_schedule(date_str: str, query_value: str, entity_type: Literal["Group", "Teacher"], use_cache: bool = True) -> Tuple[Optional[List[str]], Optional[str]]:
+async def get_schedule(date_str: str, query_value: str, entity_type: Literal["Group", "Teacher"], use_cache: bool = True, bot=None) -> Tuple[Optional[List[str]], Optional[str]]:
+    """
+    Получить расписание для группы или преподавателя
+
+    Args:
+        date_str: Дата в формате YYYY-MM-DD
+        query_value: Название группы или ФИО преподавателя
+        entity_type: "Group" или "Teacher"
+        use_cache: Использовать кеш
+        bot: Опциональный объект бота для отправки алертов (если None, алерты не отправляются)
+    """
     if entity_type == API_TYPE_TEACHER:
         url = f"{BASE_URL_SCHEDULE}?teacher={quote(query_value)}&date={date_str}"
         not_found_msg = f"Расписание не найдено для преподавателя '{query_value}' на {date_str} 🫤"
@@ -73,14 +94,62 @@ async def get_schedule(date_str: str, query_value: str, entity_type: Literal["Gr
     else:
         return None, "Внутренняя ошибка."
 
+    start_time = time_module.time()
     try:
         response = await make_request_with_retry(url, schedule_cache, use_cache=use_cache)
-    except Exception as e:
-        return None, f"😔 Не удалось загрузить расписание. Попробуйте позже.\n\n💡 Возможные причины:\n• Сайт ВГЛТУ временно недоступен\n• Проблемы с интернет-соединением"
+    except Exception:
+        # Это сетевая ошибка, монитору о ней знать не обязательно
+        return None, "😔 Не удалось загрузить расписание. Попробуйте позже.\n\n💡 Возможные причины:\n• Сайт ВГЛТУ временно недоступен\n• Проблемы с интернет-соединением"
 
     soup = BeautifulSoup(response.text, "lxml")
-    # Ищем div с расписанием
-    days_html = find_schedule_divs(soup)
+
+    # --- НАЧАЛО ВАЛИДАЦИИ ВЕРСТКИ ---
+
+    # 1. Проверяем, не вернул ли сайт ошибку внутри HTML (бывает HTTP 200, но текст "Error SQL...")
+    if "syntax error" in response.text.lower() or "mysql" in response.text.lower():
+        logger.error("SQL Error на сайте ВГЛТУ для %s", url)
+        # Отправляем алерт если есть bot
+        if bot:
+            from .admin.utils import get_root_admin_id
+            admin_id = get_root_admin_id()
+            if admin_id:
+                await monitor.report_failure(bot, admin_id, "SQL Error на сайте ВГЛТУ", f"{entity_type}: {query_value}", request_type=entity_type)
+        raise LayoutChangedError("SQL Error на сайте ВГЛТУ")
+
+    # 2. Ищем расписание с обработкой ошибок парсинга
+    try:
+        days_html = find_schedule_divs(soup)
+    except Exception as e:
+        logger.error(f"Ошибка при парсинге HTML структуры расписания: {e}", exc_info=True)
+        error_msg = "Сайт ВГЛТУ изменил структуру. Парсер не может найти расписание."
+        if bot and admin_id:
+            await monitor.report_failure(bot, admin_id, "Ошибка парсинга", f"{entity_type}: {query_value}", request_type=entity_type)
+        raise LayoutChangedError(error_msg)
+
+    # КРИТИЧЕСКАЯ ПРОВЕРКА:
+    # Если мы получили 200 OK, текст длинный, но find_schedule_divs вернул пустоту,
+    # И при этом на странице НЕТ текста "Занятий нет" — значит верстка СЛОМАЛАСЬ.
+
+    page_text_lower = soup.get_text().lower()
+    is_no_pairs_message = any(phrase in page_text_lower for phrase in SELECTOR_NO_PAIRS_TEXTS)
+
+    if not days_html and not is_no_pairs_message:
+        # Похоже, мы не смогли распарсить валидную страницу
+        logger.error(f"Parsing failed for {url}. HTML length: {len(response.text)}")
+        if len(response.text) > 500:  # Если страница не пустая, но ничего не нашли
+            # Отправляем алерт если есть bot
+            if bot:
+                from .admin.utils import get_root_admin_id
+                admin_id = get_root_admin_id()
+                if admin_id:
+                    await monitor.report_failure(bot, admin_id, "Изменение верстки HTML", f"{entity_type}: {query_value}, URL: {url}", request_type=entity_type)
+            raise LayoutChangedError(f"Layout changed or unknown error for {query_value}")
+
+    # Если мы здесь — значит парсинг прошел (либо нашли пары, либо "занятий нет")
+    # Сообщаем монитору, что все ок
+    duration = time_module.time() - start_time
+    await monitor.report_success(request_type=entity_type, duration=duration)
+
     if not days_html:
         return [not_found_msg], None
 
@@ -110,14 +179,18 @@ async def get_schedule(date_str: str, query_value: str, entity_type: Literal["Gr
             for pair_tr in pairs_html:
                 try:
                     tds = pair_tr.find_all("td")
-                    if tds:
-                        # Проверяем, есть ли содержимое в ячейках
-                        content = "".join([td.text.strip() if td.text else "" for td in tds])
-                        if content and content.strip():
-                            has_real_pairs = True
-                            break
-                except Exception:
+                    if not tds:
+                        # Если нет td, это может быть проблема структуры HTML
+                        logger.warning(f"Найдена строка tr без td в расписании для {day_date_str}")
+                        continue
+                    # Проверяем, есть ли содержимое в ячейках
+                    content = "".join([td.text.strip() if td.text else "" for td in tds])
+                    if content and content.strip():
+                        has_real_pairs = True
+                        break
+                except Exception as e:
                     # Пропускаем проблемные строки
+                    logger.warning(f"Ошибка при проверке пары: {e}")
                     continue
 
             # Пропускаем дни без реальных пар
@@ -180,7 +253,8 @@ async def get_schedule(date_str: str, query_value: str, entity_type: Literal["Gr
 
                     idx = pair_counter - 1
                     pair_emoji = PAIR_EMOJIS[idx] if 0 <= idx < len(PAIR_EMOJIS) else f" {idx+1}."
-                    pair_info = f"{pair_emoji} <b>{time}</b>\n  📖 {subject}\n  📍 {auditorium_link}\n"
+                    subject_emoji = get_pair_type_emoji(subject)
+                    pair_info = f"{pair_emoji} <b>{time}</b>\n  {subject_emoji} {subject}\n  📍 {auditorium_link}\n"
 
                     if entity_type == API_TYPE_GROUP and len(details_lines) > 1:
                         try:
@@ -219,7 +293,7 @@ def find_schedule_divs(soup: BeautifulSoup) -> List:
     Использует несколько стратегий поиска для надежности.
     """
     # Стратегия 1: Поиск по стилю (оригинальный метод)
-    days_html = soup.find_all("div", style=lambda x: x and "margin-bottom: 25px" in x)
+    days_html = soup.find_all("div", style=lambda x: x and SELECTOR_SCHEDULE_DIV_STYLE in x)
     if days_html:
         return days_html
 
@@ -241,7 +315,7 @@ def find_schedule_divs(soup: BeautifulSoup) -> List:
 
     return []
 
-async def get_schedule_structured(date_str: str, query_value: str, entity_type: Literal["Group", "Teacher"]) -> Tuple[Optional[Dict], Optional[str]]:
+async def get_schedule_structured(date_str: str, query_value: str, entity_type: Literal["Group", "Teacher"], bot=None) -> Tuple[Optional[Dict], Optional[str]]:
     """
     Получить структурированное расписание (для экспорта)
     ВАЖНО: Проверяет, что дата из HTML соответствует запрошенной дате,
@@ -262,13 +336,40 @@ async def get_schedule_structured(date_str: str, query_value: str, entity_type: 
 
     try:
         response = await make_request_with_retry(url, schedule_cache, use_cache=True)
-    except Exception as e:
+    except Exception:
         return None, "😔 Не удалось загрузить расписание. Попробуйте позже."
 
     soup = BeautifulSoup(response.text, "lxml")
 
+    # Валидация верстки (аналогично get_schedule)
+    if "syntax error" in response.text.lower() or "mysql" in response.text.lower():
+        logger.error(f"SQL Error на сайте ВГЛТУ для {url}")
+        if bot:
+            from .admin.utils import get_root_admin_id
+            admin_id = get_root_admin_id()
+            if admin_id:
+                await monitor.report_failure(bot, admin_id, "SQL Error на сайте ВГЛТУ", f"{entity_type}: {query_value}", request_type=entity_type)
+        raise LayoutChangedError("SQL Error на сайте ВГЛТУ")
+
     # Ищем div с расписанием
     days_html = find_schedule_divs(soup)
+
+    # Проверка на изменение верстки
+    page_text_lower = soup.get_text().lower()
+    is_no_pairs_message = any(phrase in page_text_lower for phrase in SELECTOR_NO_PAIRS_TEXTS)
+
+    if not days_html and not is_no_pairs_message and len(response.text) > 500:
+        logger.error(f"Parsing failed for {url}. HTML length: {len(response.text)}")
+        if bot:
+            from .admin.utils import get_root_admin_id
+            admin_id = get_root_admin_id()
+            if admin_id:
+                await monitor.report_failure(bot, admin_id, "Изменение верстки HTML", f"{entity_type}: {query_value}, URL: {url}", request_type=entity_type)
+        raise LayoutChangedError(f"Layout changed or unknown error for {query_value}")
+
+    # Сообщаем монитору об успехе
+    await monitor.report_success()
+
     if not days_html:
         logger.warning(f"Для {date_str} не найдено div с расписанием в HTML")
         return None, "Расписание не найдено"

@@ -4,7 +4,7 @@
 import asyncio
 import logging
 from typing import Optional
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from telegram import Message
 from telegram.error import BadRequest, NetworkError, TimedOut
 from telegram.ext import ContextTypes
@@ -72,21 +72,52 @@ async def safe_edit_message_text(callback_query, text: str, reply_markup=None, p
         return False
 
 
-@contextmanager
-def user_busy_context(user_data: dict):
+@asynccontextmanager
+async def user_busy_context(user_data: dict, timeout: float = 30.0):
     """
-    Context Manager для автоматического управления блокировкой пользователя.
+    Async Context Manager для автоматического управления блокировкой пользователя.
+    Автоматически снимает флаг busy через timeout секунд, если операция не завершилась.
 
     Использование:
-        with user_busy_context(context.user_data):
+        async with user_busy_context(context.user_data):
             # Делаем долгую работу
             await do_heavy_task()
         # Блокировка снимется автоматически
+
+    Args:
+        user_data: Словарь user_data из context
+        timeout: Максимальное время блокировки в секундах (по умолчанию 30)
     """
     set_user_busy(user_data, True)
+    timeout_task = None
+    
+    async def _timeout_handler():
+        """Принудительно снимает флаг busy через timeout секунд"""
+        await asyncio.sleep(timeout)
+        if user_data.get("ctx_is_busy"):
+            logger.warning(f"Тайм-аут блокировки пользователя ({timeout}с), принудительно снимаю флаг busy")
+            set_user_busy(user_data, False)
+    
     try:
+        # Создаем задачу тайм-аута
+        try:
+            loop = asyncio.get_running_loop()
+            timeout_task = loop.create_task(_timeout_handler())
+        except RuntimeError:
+            # Нет активного event loop, тайм-аут не нужен
+            pass
+        
         yield
     finally:
+        # Отменяем задачу тайм-аута, если она еще не выполнилась
+        if timeout_task and not timeout_task.done():
+            timeout_task.cancel()
+            try:
+                await timeout_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Всегда снимаем флаг busy
         set_user_busy(user_data, False)
 
 
@@ -168,8 +199,15 @@ def get_admin_reply_states(context: ContextTypes.DEFAULT_TYPE) -> dict:
     return context.application.bot_data.setdefault("admin_reply_states", {})
 
 
-def load_user_data_from_db(user_id: int, user_data: dict):
-    """Загружает данные пользователя из БД в user_data"""
+def load_user_data_from_db(user_id: int, user_data: dict, force: bool = False):
+    """
+    Загружает данные пользователя из БД в user_data
+
+    Args:
+        user_id: ID пользователя
+        user_data: Словарь user_data из context
+        force: Если True, загружает данные даже если они уже есть в user_data
+    """
     from ..database import db
     from ..constants import (
         CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE,
@@ -178,18 +216,28 @@ def load_user_data_from_db(user_id: int, user_data: dict):
     import logging
     logger = logging.getLogger(__name__)
 
+    # Проверяем, нужно ли загружать данные
+    if not force:
+        # Если данные уже загружены (есть хотя бы один ключ), пропускаем
+        if any(key in user_data for key in [CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE, CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME]):
+            logger.debug(f"Данные пользователя {user_id} уже загружены, пропускаем")
+            return
+
     try:
         user_db = db.get_user(user_id)
         if user_db:
-            if user_db.get('default_query'):
-                user_data[CTX_DEFAULT_QUERY] = user_db['default_query']
-            if user_db.get('default_mode'):
-                user_data[CTX_DEFAULT_MODE] = user_db['default_mode']
-            if user_db.get('daily_notifications') is not None:
-                user_data[CTX_DAILY_NOTIFICATIONS] = bool(user_db['daily_notifications'])
-            if user_db.get('notification_time'):
-                user_data[CTX_NOTIFICATION_TIME] = user_db['notification_time']
-            logger.debug(f"Данные пользователя {user_id} загружены из БД")
+            # Загружаем все данные, даже если они None
+            if 'default_query' in user_db:
+                user_data[CTX_DEFAULT_QUERY] = user_db.get('default_query')
+            if 'default_mode' in user_db:
+                user_data[CTX_DEFAULT_MODE] = user_db.get('default_mode')
+            if 'daily_notifications' in user_db:
+                user_data[CTX_DAILY_NOTIFICATIONS] = bool(user_db.get('daily_notifications', False))
+            if 'notification_time' in user_db:
+                user_data[CTX_NOTIFICATION_TIME] = user_db.get('notification_time', '21:00')
+            logger.debug(f"Данные пользователя {user_id} загружены из БД: query={user_db.get('default_query')}, mode={user_db.get('default_mode')}")
+        else:
+            logger.debug(f"Пользователь {user_id} не найден в БД")
     except Exception as e:
         logger.error(f"Ошибка загрузки данных пользователя {user_id} из БД: {e}", exc_info=True)
 

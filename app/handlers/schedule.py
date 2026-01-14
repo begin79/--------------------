@@ -7,7 +7,7 @@ import hashlib
 import logging
 import re
 from typing import Optional, Tuple
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, Message
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardRemove
 from telegram.constants import ParseMode, ChatAction
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
@@ -15,16 +15,20 @@ from telegram.ext import ContextTypes
 from ..constants import (
     CTX_MODE, CTX_SELECTED_DATE, CTX_LAST_QUERY, CTX_SCHEDULE_PAGES, CTX_CURRENT_PAGE_INDEX,
     CTX_FOUND_ENTITIES, CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE,
+    CTX_AWAITING_DEFAULT_QUERY, CTX_AWAITING_FEEDBACK,
     CALLBACK_DATA_BACK_TO_START, CALLBACK_DATA_SETTINGS_MENU,
     CALLBACK_DATA_PREV_SCHEDULE_PREFIX, CALLBACK_DATA_NEXT_SCHEDULE_PREFIX,
     CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX, CALLBACK_DATA_EXPORT_MENU,
+    CALLBACK_DATA_CANCEL_INPUT,
     MODE_STUDENT, API_TYPE_GROUP, API_TYPE_TEACHER,
     ENTITY_GROUP, ENTITY_GROUPS, ENTITY_GROUP_GENITIVE, ENTITY_TEACHER, ENTITY_TEACHER_GENITIVE,
     GROUP_NAME_PATTERN,
 )
 from ..utils import escape_html
-from ..schedule import get_schedule, search_entities
+from ..schedule import get_schedule, search_entities, LayoutChangedError
 from ..database import db
+from ..monitoring import monitor
+from ..admin.utils import get_root_admin_id
 from .utils import safe_edit_message_text, get_default_reply_keyboard, user_busy_context
 
 logger = logging.getLogger(__name__)
@@ -50,16 +54,74 @@ def detect_query_type(text: str) -> Optional[Tuple[str, str]]:
     return None
 
 
-async def safe_get_schedule(date: str, query: str, api_type: str, timeout: float = 15.0):
+async def handle_mode_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str, for_default: bool = False):
+    """
+    Обрабатывает выбор режима (студент/преподаватель)
+    
+    Args:
+        update: Обновление от Telegram
+        context: Контекст бота
+        mode: Режим ('student' или 'teacher')
+        for_default: Если True, устанавливает флаг для сохранения как значения по умолчанию
+    """
+    from .utils import safe_answer_callback_query, safe_edit_message_text
+    
+    if not update.callback_query:
+        return
+    
+    user_data = context.user_data
+    
+    # Устанавливаем режим
+    user_data[CTX_MODE] = mode
+    
+    # ВАЖНО: Очищаем CTX_AWAITING_FEEDBACK при выборе режима, чтобы избежать конфликтов
+    user_data.pop(CTX_AWAITING_FEEDBACK, None)
+    
+    # Если это для установки по умолчанию, устанавливаем флаг
+    if for_default:
+        user_data[CTX_AWAITING_DEFAULT_QUERY] = True
+    
+    mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
+    
+    # Отвечаем на callback
+    await safe_answer_callback_query(update.callback_query, f"Выбран режим: {'Студент' if mode == MODE_STUDENT else 'Преподаватель'}")
+    
+    # Формируем сообщение
+    if for_default:
+        text = f"⚙️ <b>Установка по умолчанию</b>\n\n"
+        text += f"✅ Вы выбрали режим: <b>{'Студент' if mode == MODE_STUDENT else 'Преподаватель'}</b>\n\n"
+        text += f"Теперь введите название {mode_text.lower()}:"
+    else:
+        text = f"✅ Вы выбрали режим: <b>{'Студент' if mode == MODE_STUDENT else 'Преподаватель'}</b>\n\n"
+        text += f"Теперь введите название {mode_text.lower()}:"
+    
+    if mode == MODE_STUDENT:
+        text += "\n\n💡 <i>Например: ИС1-231-ОТ</i>"
+    else:
+        text += "\n\n💡 <i>Например: Иванов Иван Иванович</i>"
+    
+    # Добавляем Inline-кнопку "Назад" для удобства
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Назад", callback_data=CALLBACK_DATA_CANCEL_INPUT)]
+    ])
+    
+    # Редактируем сообщение или отправляем новое
+    await safe_edit_message_text(update.callback_query, text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+
+
+async def safe_get_schedule(date: str, query: str, api_type: str, timeout: float = 15.0, bot=None):
     """Безопасное получение расписания с таймаутом (оптимизировано для быстрых ответов)"""
     try:
         return await asyncio.wait_for(
-            get_schedule(date, query, api_type),
+            get_schedule(date, query, api_type, bot=bot),
             timeout=timeout
         )
     except asyncio.TimeoutError:
         logger.warning(f"Таймаут при получении расписания для {query} на {date}")
         return None, "Превышено время ожидания ответа от сервера. Попробуйте позже."
+    except LayoutChangedError:
+        # Пробрасываем LayoutChangedError дальше для обработки в handlers
+        raise
     except Exception as e:
         logger.error(f"Ошибка при получении расписания: {e}", exc_info=True)
         return None, f"Ошибка при получении расписания: {str(e)}"
@@ -75,7 +137,7 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
     user_data = context.user_data
 
     # Используем context manager для автоматического управления блокировкой
-    with user_busy_context(user_data):
+    async with user_busy_context(user_data):
         if not user_data.get(CTX_MODE):
             logger.warning(f"⚠️ [{user_id}] @{username} → Попытка поиска без выбора режима")
             await update.message.reply_text("Сначала выберите режим через /start.")
@@ -155,9 +217,14 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
             await fetch_and_display_schedule(update, context, found[0])
         else:
             # Сохраняем найденные варианты для последующей проверки
-            user_data[CTX_FOUND_ENTITIES] = found[:20]
-            kbd = [[KeyboardButton(e)] for e in found[:20]]
-            msg = f"Найдено несколько {p_name}. Выберите вариант:" if len(found) <= 20 else f"Найдено слишком много ({len(found)}). Показаны первые 20:"
+            from ..constants import MAX_SEARCH_RESULTS_DISPLAY
+            user_data[CTX_FOUND_ENTITIES] = found[:MAX_SEARCH_RESULTS_DISPLAY]
+            kbd = [[KeyboardButton(e)] for e in found[:MAX_SEARCH_RESULTS_DISPLAY]]
+            msg = (
+                f"Найдено несколько {p_name}. Выберите вариант:" 
+                if len(found) <= MAX_SEARCH_RESULTS_DISPLAY 
+                else f"Найдено слишком много ({len(found)}). Показаны первые {MAX_SEARCH_RESULTS_DISPLAY}:"
+            )
             await update.message.reply_text(
                 msg,
                 reply_markup=ReplyKeyboardMarkup(kbd, resize_keyboard=True, one_time_keyboard=True)
@@ -174,7 +241,7 @@ async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAU
     user_data = context.user_data
 
     # Используем context manager для автоматического управления блокировкой
-    with user_busy_context(user_data):
+    async with user_busy_context(user_data):
         mode = user_data.get(CTX_MODE)
         api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
         date = user_data.setdefault(CTX_SELECTED_DATE, datetime.date.today().strftime("%Y-%m-%d"))
@@ -190,12 +257,25 @@ async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAU
             except Exception as e:
                 logger.debug(f"Ошибка при редактировании сообщения: {e}", exc_info=True)
 
-        pages, err = await safe_get_schedule(date, query, api_type)
+        try:
+            # Передаем bot для мониторинга
+            pages, err = await safe_get_schedule(date, query, api_type, bot=context.bot)
+        except LayoutChangedError as e:
+            # ВОТ ОНО! Хендлер поймал критическую ошибку
+            # Алерт уже отправлен в get_schedule, если был передан bot
+            monitor.log_user_request(user_id, query, api_type, date, success=False)
+            reply_keyboard = get_default_reply_keyboard()
+            target = msg_to_edit or update.effective_message
+            if target:
+                await target.reply_text("🔧 Техническая проблема с сайтом университета. Администратор уже уведомлен.", reply_markup=reply_keyboard)
+            return
 
         if pages:
             logger.debug(f"✅ [{user_id}] Получено расписание: {len(pages)} страниц")
+            monitor.log_user_request(user_id, query, api_type, date, success=True)
         else:
             logger.warning(f"❌ [{user_id}] Ошибка получения расписания: {err}")
+            monitor.log_user_request(user_id, query, api_type, date, success=False)
 
         if err or not pages:
             reply_keyboard = get_default_reply_keyboard()

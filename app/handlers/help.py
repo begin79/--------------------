@@ -42,7 +42,6 @@ async def help_command_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         "💡 <i>Совет: Установите группу по умолчанию для быстрого доступа!</i>"
     )
     reply_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚙️ Настройки", callback_data=CALLBACK_DATA_SETTINGS_MENU)],
         [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
     ])
     if update.callback_query:

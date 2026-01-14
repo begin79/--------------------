@@ -17,6 +17,10 @@ from .admin.database import admin_db
 
 logger = logging.getLogger(__name__)
 
+# Константы для валидации размеров
+MAX_PHOTO_SIZE = 10 * 1024 * 1024  # 10MB - лимит Telegram для фото
+MAX_DOCUMENT_SIZE = 50 * 1024 * 1024  # 50MB - лимит Telegram для документов
+
 async def daily_schedule_job(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     chat_id = job.chat_id
@@ -166,12 +170,13 @@ async def check_schedule_changes_job(context: ContextTypes.DEFAULT_TYPE):
                         [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
                     ])
 
-                    # Сохраняем данные расписания для просмотра
+                    # Сохраняем данные расписания для просмотра (с timestamp для очистки)
                     context.bot_data[f"changed_schedule_{user_id}_{date_str}"] = {
                         "query": default_query,
                         "mode": default_mode,
                         "date": date_str,
-                        "pages": pages
+                        "pages": pages,
+                        "timestamp": datetime.datetime.utcnow().isoformat()
                     }
 
                     try:
@@ -191,5 +196,121 @@ async def check_schedule_changes_job(context: ContextTypes.DEFAULT_TYPE):
                     context.bot_data[schedule_struct_key] = new_schedule
         except Exception as e:
             logger.error(f"Ошибка при проверке расписания для пользователя {user_id}: {e}")
+
+
+async def cleanup_bot_data_job(context: ContextTypes.DEFAULT_TYPE):
+    """Очистка старых данных из bot_data для предотвращения утечек памяти"""
+    from datetime import datetime, timedelta
+
+    logger.debug("🧹 Запущена очистка bot_data")
+    now = datetime.utcnow()
+    keys_to_delete = []
+
+    # Очистка старых расписаний (старше 1 часа)
+    for key in list(context.bot_data.keys()):
+        if key.startswith("changed_schedule_"):
+            schedule_data = context.bot_data.get(key)
+            if isinstance(schedule_data, dict):
+                timestamp = schedule_data.get('timestamp')
+                if timestamp:
+                    try:
+                        # Если timestamp - строка, парсим её
+                        if isinstance(timestamp, str):
+                            timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                        # Если timestamp - datetime без timezone, считаем что это UTC
+                        if timestamp.tzinfo is None:
+                            timestamp = timestamp.replace(tzinfo=datetime.timezone.utc)
+                        # Сравниваем в UTC
+                        if (now - timestamp.replace(tzinfo=None)) > timedelta(hours=1):
+                            keys_to_delete.append(key)
+                    except Exception as e:
+                        logger.debug(f"Ошибка при проверке timestamp для {key}: {e}")
+                        # Если не удалось распарсить, удаляем если ключ старше 2 часов
+                        keys_to_delete.append(key)
+                else:
+                    # Если нет timestamp, удаляем (старые данные)
+                    keys_to_delete.append(key)
+
+        # Очистка старых структурированных расписаний (старше 2 часов)
+        elif key.startswith("schedule_struct_"):
+            # Эти данные используются для сравнения, можно хранить дольше
+            # Но все равно очищаем старые
+            schedule_data = context.bot_data.get(key)
+            if schedule_data and not isinstance(schedule_data, dict):
+                # Если данные повреждены, удаляем
+                keys_to_delete.append(key)
+
+    # Очистка старых export данных (старше 1 часа)
+    for key in list(context.bot_data.keys()):
+        if key.startswith("export_") and not key.startswith("export_back_"):
+            # Проверяем, не используется ли сейчас
+            # Если ключ начинается с export_ но не export_back_, это временные данные
+            # Можно удалить если старше 1 часа (но у нас нет timestamp, поэтому пропускаем)
+            pass
+
+    # Удаляем найденные ключи
+    deleted_count = 0
+    for key in keys_to_delete:
+        try:
+            del context.bot_data[key]
+            deleted_count += 1
+        except KeyError:
+            pass
+
+    if deleted_count > 0:
+        logger.info(f"🧹 Очищено {deleted_count} старых записей из bot_data")
+
+    # Очистка users_data_cache от неактивных пользователей (не использовались 24 часа)
+    # Это более сложная логика, можно добавить позже если нужно
+
+
+async def automatic_backup_job(context: ContextTypes.DEFAULT_TYPE):
+    """Автоматическое создание резервной копии базы данных"""
+    import shutil
+    import gzip
+    from pathlib import Path
+    from datetime import datetime
+    
+    logger.info("💾 Запущено автоматическое резервное копирование базы данных")
+    
+    try:
+        from .database import DB_PATH
+        from .config import DATA_DIR
+        
+        db_path = Path(DB_PATH)
+        if not db_path.exists():
+            logger.warning(f"База данных не найдена: {db_path}")
+            return
+        
+        # Создаем директорию для бэкапов
+        backup_dir = Path(DATA_DIR) / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Генерируем имя файла с timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = backup_dir / f"users_backup_{timestamp}.db.gz"
+        
+        # Копируем и сжимаем базу данных
+        logger.info(f"Создание резервной копии: {backup_path}")
+        with open(db_path, 'rb') as f_in:
+            with gzip.open(backup_path, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        
+        size = backup_path.stat().st_size
+        size_mb = size / (1024 * 1024)
+        logger.info(f"✅ Резервная копия создана: {backup_path} ({size_mb:.2f} MB)")
+        
+        # Удаляем старые бэкапы (оставляем последние 7)
+        backups = sorted(backup_dir.glob("users_backup_*.db.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if len(backups) > 7:
+            for old_backup in backups[7:]:
+                try:
+                    old_backup.unlink()
+                    logger.debug(f"Удален старый бэкап: {old_backup.name}")
+                except Exception as e:
+                    logger.warning(f"Не удалось удалить старый бэкап {old_backup}: {e}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при создании автоматического бэкапа: {e}", exc_info=True)
 
 

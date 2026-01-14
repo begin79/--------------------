@@ -12,6 +12,7 @@ from ..constants import (
     CTX_MODE, CTX_SELECTED_DATE, CTX_AWAITING_MANUAL_DATE, CTX_LAST_QUERY, CTX_SCHEDULE_PAGES,
     CTX_CURRENT_PAGE_INDEX, CTX_AWAITING_DEFAULT_QUERY, CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE,
     CTX_DAILY_NOTIFICATIONS, CTX_NOTIFICATION_TIME, CTX_IS_BUSY, CTX_REPLY_KEYBOARD_PINNED, CTX_FOUND_ENTITIES,
+    CTX_AWAITING_FEEDBACK,
     CALLBACK_DATA_MODE_STUDENT, CALLBACK_DATA_MODE_TEACHER, CALLBACK_DATA_SETTINGS_MENU,
     CALLBACK_DATA_BACK_TO_START, CallbackData,
     MODE_STUDENT, MODE_TEACHER,
@@ -19,7 +20,7 @@ from ..constants import (
 from ..utils import escape_html
 from ..database import db
 from ..admin.utils import is_bot_enabled, get_maintenance_message
-from .utils import safe_edit_message_text, save_user_data_to_db, get_default_reply_keyboard
+from .utils import safe_edit_message_text, save_user_data_to_db, get_default_reply_keyboard, load_user_data_from_db
 
 logger = logging.getLogger(__name__)
 
@@ -66,24 +67,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_name = update.effective_user.last_name
     logger.info(f"👤 [{user_id}] @{username} ({first_name}) → Команда /start")
 
-    # ОПТИМИЗАЦИЯ: Один запрос к БД вместо двух (get_user + load_user_data_from_db)
+    # БД - единственный источник правды: всегда загружаем данные из БД в начале важных действий
+    load_user_data_from_db(user_id, context.user_data, force=True)
+    
+    # Проверяем, новый ли это пользователь
     user_db = db.get_user(user_id)
     is_first_time = user_db is None
 
-    # Загружаем данные напрямую из полученного результата (без повторного запроса)
-    if user_db:
-        if user_db.get('default_query'):
-            context.user_data[CTX_DEFAULT_QUERY] = user_db['default_query']
-        if user_db.get('default_mode'):
-            context.user_data[CTX_DEFAULT_MODE] = user_db['default_mode']
-        if user_db.get('daily_notifications') is not None:
-            context.user_data[CTX_DAILY_NOTIFICATIONS] = bool(user_db['daily_notifications'])
-        if user_db.get('notification_time'):
-            context.user_data[CTX_NOTIFICATION_TIME] = user_db['notification_time']
-
     # Очищаем временные ключи
     temp_keys = [CTX_MODE, CTX_SELECTED_DATE, CTX_AWAITING_MANUAL_DATE, CTX_LAST_QUERY,
-                 CTX_SCHEDULE_PAGES, CTX_CURRENT_PAGE_INDEX, CTX_AWAITING_DEFAULT_QUERY, CTX_IS_BUSY, CTX_FOUND_ENTITIES]
+                 CTX_SCHEDULE_PAGES, CTX_CURRENT_PAGE_INDEX, CTX_AWAITING_DEFAULT_QUERY, CTX_IS_BUSY, CTX_FOUND_ENTITIES, CTX_AWAITING_FEEDBACK]
     for key in temp_keys:
         context.user_data.pop(key, None)
     for dynamic_key in list(context.user_data.keys()):
