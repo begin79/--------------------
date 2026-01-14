@@ -15,6 +15,7 @@ from ..constants import (
     CALLBACK_DATA_DATE_TODAY, CALLBACK_DATA_DATE_TOMORROW,
     DEFAULT_NOTIFICATION_TIME, JOB_PREFIX_DAILY_SCHEDULE,
     MODE_STUDENT, API_TYPE_GROUP, API_TYPE_TEACHER,
+    CTX_AWAITING_FEEDBACK,
 )
 from ..database import db
 from ..utils import escape_html
@@ -181,6 +182,8 @@ async def handle_notification_open_callback(update: Update, context: ContextType
 
     mode = MODE_STUDENT if mode_part == "student" else "teacher"
     user_data = context.user_data
+    # При открытии расписания из уведомления сбрасываем режим ожидания отзыва.
+    user_data.pop(CTX_AWAITING_FEEDBACK, None)
     user_data[CTX_SELECTED_DATE] = date_str
     user_data[CTX_MODE] = mode
     query = user_data.get(CTX_DEFAULT_QUERY)

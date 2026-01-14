@@ -569,6 +569,9 @@ async def handle_quick_date_callback(update: Update, context: ContextTypes.DEFAU
 
     user_data = context.user_data
 
+    # Сбрасываем режим ожидания отзыва при переходе к быстрому выбору даты.
+    user_data.pop(CTX_AWAITING_FEEDBACK, None)
+
     # Определяем дату
     if "today" in data:
         date = datetime.date.today()

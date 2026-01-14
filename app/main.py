@@ -20,6 +20,7 @@ from .callbacks import callback_router, inline_query_handler
 from .jobs import check_schedule_changes_job
 from .http import close_http_client
 from .admin.database import admin_db
+from .database import db
 import os
 
 # Настройка подробного логирования с поддержкой Unicode для Windows
@@ -92,6 +93,17 @@ async def text_message_with_admin_check(update: Update, context: ContextTypes.DE
 
     user_id = update.effective_user.id
     text = update.message.text.strip() if update.message.text else ""
+
+    # В группах и супергруппах бот реагирует только на сообщения с его упоминанием,
+    # чтобы не перехватывать общий чат.
+    chat = update.effective_chat
+    if chat and chat.type in {"group", "supergroup"}:
+        bot_username = (context.bot.username or "").lower()
+        if bot_username:
+            mention = f"@{bot_username}"
+            if mention.lower() not in text.lower():
+                # Сообщение не адресовано боту — игнорируем.
+                return
 
     # Проверяем, ожидает ли админ ввода
     from .admin.utils import is_admin
@@ -511,6 +523,13 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Получен сигнал остановки")
     finally:
+        # Принудительно сбрасываем очередь логов активности, чтобы не потерять события
+        try:
+            db.flush_activity_log()
+            logger.info("Очередь логов активности успешно сброшена в БД")
+        except Exception as e:
+            logger.warning(f"Ошибка при сбросе очереди логов активности: {e}")
+
         # Закрываем HTTP клиент, если он был создан
         # Используем try-except, так как event loop может быть уже закрыт
         try:

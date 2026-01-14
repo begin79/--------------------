@@ -136,6 +136,10 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
     username = update.effective_user.username or "без username"
     user_data = context.user_data
 
+    # При входе в поиск расписания сбрасываем режим ожидания отзыва,
+    # чтобы ввод группы/преподавателя не перехватывался обработчиком feedback.
+    user_data.pop(CTX_AWAITING_FEEDBACK, None)
+
     # Используем context manager для автоматического управления блокировкой
     async with user_busy_context(user_data):
         if not user_data.get(CTX_MODE):
@@ -239,6 +243,9 @@ async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAU
     user_id = update.effective_user.id
     username = update.effective_user.username or "без username"
     user_data = context.user_data
+
+    # Любой прямой заход в показ расписания должен сбрасывать режим отзыва.
+    user_data.pop(CTX_AWAITING_FEEDBACK, None)
 
     # Используем context manager для автоматического управления блокировкой
     async with user_busy_context(user_data):

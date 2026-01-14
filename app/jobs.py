@@ -29,9 +29,13 @@ async def daily_schedule_job(context: ContextTypes.DEFAULT_TYPE):
     mode_text = ENTITY_GROUP_GENITIVE if mode == MODE_STUDENT else ENTITY_TEACHER_GENITIVE
     logger.info(f"🔔 [{chat_id}] → Ежедневное уведомление для {mode_text} '{query}'")
 
-    today = datetime.date.today()
-    # Отправляем расписание на завтра (сегодня + 1 день), независимо от выходных
-    target_day = today + datetime.timedelta(days=1)
+    # Используем единый источник истины по дате — московское время (UTC+3),
+    # чтобы избежать сдвига на один день при разнице таймзон сервера и пользователей.
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    today_msk = (now_utc + datetime.timedelta(hours=3)).date()
+
+    # Отправляем расписание на завтра в московском времени
+    target_day = today_msk + datetime.timedelta(days=1)
     api_type = API_TYPE_GROUP if job.data["mode"] == MODE_STUDENT else API_TYPE_TEACHER
     # Используем таймаут для уведомлений, чтобы не блокировать другие задачи
     try:
@@ -51,8 +55,9 @@ async def daily_schedule_job(context: ContextTypes.DEFAULT_TYPE):
     else:
         logger.warning(f"❌ [{chat_id}] Ошибка получения расписания для уведомления: {err}")
 
-    # Определяем текст для дня
-    if target_day == today + datetime.timedelta(days=1):
+    # Определяем текст для дня (также в московском времени)
+    tomorrow_msk = today_msk + datetime.timedelta(days=1)
+    if target_day == tomorrow_msk:
         day_text = "на завтра"
     else:
         weekdays = ["понедельник", "вторник", "среду", "четверг", "пятницу", "субботу", "воскресенье"]

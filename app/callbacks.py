@@ -298,6 +298,9 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             mode = MODE_STUDENT if mode_str == "student" else "teacher"
             
             user_data = context.user_data
+            # При входе в просмотр расписания сбрасываем режим ожидания отзыва,
+            # чтобы "призрак" отзыва не перехватывал ввод пользователя.
+            user_data.pop(CTX_AWAITING_FEEDBACK, None)
             query = user_data.get(CTX_DEFAULT_QUERY)
             default_mode = user_data.get(CTX_DEFAULT_MODE)
             
