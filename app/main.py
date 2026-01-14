@@ -236,10 +236,47 @@ async def initialize_active_users(context: ContextTypes.DEFAULT_TYPE):
 
     # Получаем статистику по пользователям
     try:
+        # Диагностика: проверяем структуру базы данных
+        import sqlite3
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.cursor()
+                # Проверяем, какие таблицы есть в базе
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = [row[0] for row in cursor.fetchall()]
+                logger.info(f"📋 Таблицы в базе данных: {', '.join(tables)}")
+                
+                # Проверяем структуру таблицы users, если она существует
+                if 'users' in tables:
+                    cursor.execute("SELECT COUNT(*) FROM users")
+                    count = cursor.fetchone()[0]
+                    logger.info(f"   Прямой запрос COUNT(*) FROM users: {count}")
+                    
+                    # Проверяем структуру таблицы
+                    cursor.execute("PRAGMA table_info(users)")
+                    columns = cursor.fetchall()
+                    logger.info(f"   Структура таблицы users: {len(columns)} колонок")
+                    if columns:
+                        logger.info(f"   Колонки: {', '.join([col[1] for col in columns])}")
+                    
+                    # Проверяем первые несколько записей
+                    cursor.execute("SELECT user_id, username, default_query FROM users LIMIT 5")
+                    sample_rows = cursor.fetchall()
+                    if sample_rows:
+                        logger.info(f"   Примеры записей (первые 5):")
+                        for row in sample_rows:
+                            logger.info(f"     user_id={row[0]}, username={row[1]}, query={row[2]}")
+                    else:
+                        logger.warning(f"   ⚠️ Таблица users пустая (нет записей)")
+                else:
+                    logger.warning(f"   ⚠️ Таблица 'users' не найдена в базе данных!")
+        except Exception as e:
+            logger.error(f"   Ошибка диагностики БД: {e}", exc_info=True)
+        
         all_users = db.get_all_users()
         users_with_query = db.get_users_with_default_query()
         logger.info(f"📊 Статистика базы данных:")
-        logger.info(f"   Всего пользователей в базе: {len(all_users)}")
+        logger.info(f"   Всего пользователей в базе (через get_all_users): {len(all_users)}")
         logger.info(f"   Пользователей с установленной группой/преподавателем: {len(users_with_query)}")
 
         if users_with_query:
