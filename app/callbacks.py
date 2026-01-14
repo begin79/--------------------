@@ -563,10 +563,41 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             )
         )
     else:
-        # Ищем группы и преподавателей
+        # Ищем группы и преподавателей и сразу готовим расписание на сегодня
         try:
+            from .handlers.schedule import detect_query_type, safe_get_schedule
+            import datetime as dt
+
+            today = dt.date.today().strftime("%Y-%m-%d")
+
+            async def _build_result(name: str, mode: str):
+                """Формирует InlineQueryResultArticle с уже готовым расписанием на сегодня."""
+                api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
+                pages, err = await safe_get_schedule(today, name, api_type, timeout=10.0, bot=context.bot)
+
+                if err or not pages:
+                    text = (
+                        f"📅 <b>Расписание на сегодня для</b> {escape_html(name)}\n\n"
+                        f"❌ Не удалось получить расписание: {escape_html(err or 'Расписание не найдено')}"
+                    )
+                else:
+                    header = (
+                        f"📅 <b>Расписание на сегодня</b>\n"
+                        f"👤 <b>{escape_html(name)}</b>\n\n"
+                    )
+                    text = header + pages[0]
+
+                return InlineQueryResultArticle(
+                    id=f"{mode}_{name}",
+                    title=name,
+                    description=f"Расписание {'группы' if mode == MODE_STUDENT else 'преподавателя'} на сегодня",
+                    input_message_content=InputTextMessageContent(
+                        message_text=text,
+                        parse_mode=ParseMode.HTML
+                    )
+                )
+
             # Определяем тип запроса
-            from .handlers.schedule import detect_query_type
             query_type = detect_query_type(query)
             
             if query_type:
@@ -582,17 +613,8 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 else:
                     found = []
                 
-                for i, name in enumerate(found):
-                    results.append(
-                        InlineQueryResultArticle(
-                            id=f"{mode}_{i}_{name}",
-                            title=name,
-                            description=f"Расписание {'группы' if mode == MODE_STUDENT else 'преподавателя'}",
-                            # Вставляем в чат только чистое название,
-                            # чтобы основной текстовый хендлер сразу искал расписание.
-                            input_message_content=InputTextMessageContent(name)
-                        )
-                    )
+                for name in found:
+                    results.append(await _build_result(name, mode))
             else:
                 # Если тип не определен, ищем и в группах, и в преподавателях
                 groups_res, _ = await search_entities(query, API_TYPE_GROUP)
@@ -600,31 +622,17 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 teachers_res, _ = await search_entities(query, API_TYPE_TEACHER)
                 teachers = teachers_res[:5] if teachers_res else []
                 
-                for i, name in enumerate(groups):
-                    results.append(
-                        InlineQueryResultArticle(
-                            id=f"student_{i}_{name}",
-                            title=f"🎓 {name}",
-                            description="Группа",
-                            input_message_content=InputTextMessageContent(name)
-                        )
-                    )
+                for name in groups:
+                    results.append(await _build_result(name, MODE_STUDENT))
                 
-                for i, name in enumerate(teachers):
-                    results.append(
-                        InlineQueryResultArticle(
-                            id=f"teacher_{i}_{name}",
-                            title=f"🧑‍🏫 {name}",
-                            description="Преподаватель",
-                            input_message_content=InputTextMessageContent(name)
-                        )
-                    )
+                for name in teachers:
+                    results.append(await _build_result(name, MODE_TEACHER))
         except Exception as e:
             logger.error(f"Ошибка при обработке inline-запроса: {e}", exc_info=True)
 
     # Отправляем результаты
     try:
-        await update.inline_query.answer(results, cache_time=300)
+        await update.inline_query.answer(results, cache_time=5)
     except Exception as e:
         logger.error(f"Ошибка при отправке inline-результатов: {e}", exc_info=True)
 
