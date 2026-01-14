@@ -149,7 +149,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await start_command(update, context)
         elif data.startswith(CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX):
             await handle_notification_open_callback(update, context, data)
-        elif data.startswith(CallbackData.VIEW_CHANGED_SCHEDULE.value):
+        elif data.startswith(CallbackPrefix.VIEW_CHANGED_SCHEDULE.value):
             # Обработка просмотра измененного расписания из уведомления
             from .handlers.utils import safe_answer_callback_query, safe_edit_message_text
             from .handlers.schedule import send_schedule_with_pagination
@@ -160,7 +160,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_answer_callback_query(update.callback_query, "Загружаю расписание...")
             
             # Извлекаем mode и date из callback_data: "view_changed_schedule_student_2026-01-14"
-            prefix = CallbackData.VIEW_CHANGED_SCHEDULE.value
+            prefix = CallbackPrefix.VIEW_CHANGED_SCHEDULE.value
             if not data.startswith(prefix):
                 logger.error(f"Неверный формат callback для просмотра измененного расписания: {data}")
                 await update.callback_query.answer("Ошибка: неверный формат команды", show_alert=True)
