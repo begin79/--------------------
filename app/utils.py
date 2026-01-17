@@ -116,18 +116,13 @@ def get_pair_type_emoji(subject: str) -> str:
 
 def get_next_weekday(date: datetime.date) -> datetime.date:
     """
-    Получить следующий рабочий день (понедельник-суббота)
-    
-    Args:
-        date: Текущая дата
-        
-    Returns:
-        Следующий рабочий день
+    Получить следующий логический рабочий день для проверки.
+    Если сегодня Сб, вернет Пн.
+    Если сегодня Вс, вернет Пн.
     """
     next_day = date + datetime.timedelta(days=1)
-    # Если следующий день - воскресенье, возвращаем понедельник
     if next_day.weekday() == 6:  # Воскресенье
-        return next_day + datetime.timedelta(days=1)
+        return next_day + datetime.timedelta(days=1) # Понедельник
     return next_day
 
 

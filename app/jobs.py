@@ -94,10 +94,10 @@ async def check_schedule_changes_job(context: ContextTypes.DEFAULT_TYPE):
         context.bot_data['users_data_cache'] = {}
 
     today = datetime.date.today()
+    # Если сегодня воскресенье — проверяем только завтра (понедельник)
+    # Если сегодня суббота — проверяем сегодня и понедельник
     from .utils import get_next_weekday
-    next_weekday = get_next_weekday(today)
-    dates_to_check = [today.strftime("%Y-%m-%d"), next_weekday.strftime("%Y-%m-%d")]
-
+    
     active_users = context.bot_data.get('active_users', set()).copy()
     logger.info(f"👥 Проверяю расписание для {len(active_users)} активных пользователей")
 
@@ -110,98 +110,88 @@ async def check_schedule_changes_job(context: ContextTypes.DEFAULT_TYPE):
                 continue
 
             api_type = API_TYPE_GROUP if default_mode == MODE_STUDENT else API_TYPE_TEACHER
+            
+            # Определяем список дат для проверки
+            dates_to_check = [today.strftime("%Y-%m-%d")]
+            next_wd = get_next_weekday(today)
+            if next_wd != today:
+                dates_to_check.append(next_wd.strftime("%Y-%m-%d"))
+            
+            # Убираем дубликаты и фильтруем воскресенья
+            dates_to_check = list(dict.fromkeys(dates_to_check))
+            
+            changes_detected = [] # Список для сбора изменений
+
             for date_str in dates_to_check:
+                # Пропускаем проверку, если это воскресенье
+                date_obj_check = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+                if date_obj_check.weekday() == 6:
+                    continue
+
                 cache_key = f"{user_id}_{default_query}_{date_str}"
-                # ОПТИМИЗАЦИЯ: Используем один запрос вместо двух
-                # Получаем страницы (с кешем!) для хеширования и отображения
+                
                 try:
-                    try:
-                        pages, err_pages = await asyncio.wait_for(
-                            get_schedule(date_str, default_query, api_type, use_cache=True),  # ОПТИМИЗАЦИЯ: use_cache=True
-                            timeout=8.0  # ОПТИМИЗАЦИЯ: уменьшен таймаут
-                        )
-                        if err_pages or not pages:
-                            continue
-                    except asyncio.TimeoutError:
-                        logger.debug(f"Таймаут при получении расписания для {user_id} ({date_str})")
+                    pages, err_pages = await asyncio.wait_for(
+                        get_schedule(date_str, default_query, api_type, use_cache=False), 
+                        timeout=10.0
+                    )
+                    if err_pages or not pages or "Занятий нет" in pages[0]:
+                        # Если пар нет, просто сохраняем пустой хеш, чтобы не уведомлять о "пустоте"
+                        admin_db.save_schedule_snapshot(cache_key, "empty")
                         continue
-                    except Exception as e:
-                        logger.debug(f"Ошибка при получении расписания для {user_id} ({date_str}): {e}")
-                        continue
-
-                    # ОПТИМИЗАЦИЯ: Получаем структурированное расписание только если нужно для сравнения
-                    # (это использует тот же кешированный HTML)
-                    try:
-                        new_schedule, err = await asyncio.wait_for(
-                            get_schedule_structured(date_str, default_query, api_type),
-                            timeout=5.0  # ОПТИМИЗАЦИЯ: короткий таймаут, т.к. данные уже в кеше
-                        )
-                    except asyncio.TimeoutError:
-                        new_schedule = None
-                    except Exception:
-                        new_schedule = None
-
-                except Exception as e:
-                    # Общий catch для любых неожиданных ошибок
-                    logger.error(f"Неожиданная ошибка при проверке изменений для {user_id} ({date_str}): {e}", exc_info=True)
+                        
+                    new_schedule, _ = await asyncio.wait_for(
+                        get_schedule_structured(date_str, default_query, api_type),
+                        timeout=8.0
+                    )
+                except Exception:
                     continue
 
                 current_hash = hash_schedule(pages)
                 prev_hash = admin_db.get_schedule_snapshot(cache_key)
 
-                if prev_hash and prev_hash != current_hash:
-                    date_obj = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-                    date_display = "сегодня" if date_obj == today else "завтра"
-                    logger.info(f"🔔 [{user_id}] → Обнаружено изменение расписания {date_display} для '{default_query}'")
-
-                    # Получаем старое структурированное расписание из кеша
+                # ГЛАВНОЕ ИСПРАВЛЕНИЕ: 
+                # Не уведомляем, если prev_hash пустой (первое появление расписания)
+                # или если старый хеш был "empty"
+                if prev_hash and prev_hash != "empty" and prev_hash != current_hash:
                     old_schedule_key = f"schedule_struct_{cache_key}"
                     old_schedule = context.bot_data.get(old_schedule_key)
-
-                    # Сравниваем расписания
                     changes = compare_schedules(old_schedule, new_schedule)
-
-                    # Формируем сообщение
+                    
                     if changes:
-                        msg = format_schedule_changes(changes, date_str, default_query)
-                        # Добавляем кнопку "Посмотреть полное расписание"
-                        msg += "\n\n👆 Нажмите кнопку ниже, чтобы посмотреть полное расписание."
-                    else:
-                        # Если не удалось сравнить детально, показываем общее сообщение
-                        msg = f"🔔 <b>Расписание изменилось</b>\n\nРасписание {date_display} ({date_obj.strftime('%d.%m.%Y')}) для {escape_html(default_query)} было обновлено."
+                        changes_detected.append({
+                            "date_str": date_str,
+                            "msg": format_schedule_changes(changes, date_str, default_query),
+                            "pages": pages
+                        })
 
-                    kbd = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("👁️ Посмотреть расписание", callback_data=f"view_changed_schedule_{default_mode}_{date_str}")],
-                        [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
-                    ])
-
-                    # Сохраняем данные расписания для просмотра (с timestamp для очистки)
-                    context.bot_data[f"changed_schedule_{user_id}_{date_str}"] = {
-                        "query": default_query,
-                        "mode": default_mode,
-                        "date": date_str,
-                        "pages": pages,
-                        "timestamp": datetime.datetime.utcnow().isoformat()
-                    }
-
-                    try:
-                        await context.bot.send_message(user_id, msg, parse_mode=ParseMode.HTML, reply_markup=kbd)
-                        logger.info(f"✅ [{user_id}] Уведомление об изменении отправлено")
-                    except Forbidden:
-                        logger.warning(f"⚠️ [{user_id}] Пользователь заблокировал бота")
-                        context.bot_data['active_users'].discard(user_id)
-
-                    # Сохраняем новое структурированное расписание для следующего сравнения
-                    context.bot_data[old_schedule_key] = new_schedule
-
-                # Сохраняем хеш и структурированное расписание
+                # Обновляем снимки в базе
                 admin_db.save_schedule_snapshot(cache_key, current_hash)
                 if new_schedule:
-                    schedule_struct_key = f"schedule_struct_{cache_key}"
-                    context.bot_data[schedule_struct_key] = new_schedule
+                    context.bot_data[f"schedule_struct_{cache_key}"] = new_schedule
+
+            # Если есть изменения, отправляем ОДНИМ сообщением
+            if changes_detected:
+                # Склеиваем сообщения об изменениях
+                full_msg = "🔔 <b>Обнаружены изменения!</b>\n\n" + "\n\n".join([c["msg"] for c in changes_detected])
+                full_msg += "\n\n👆 Нажмите кнопку ниже для просмотра."
+                
+                # Используем дату первого изменения для кнопки "Посмотреть"
+                first_change = changes_detected[0]
+                
+                kbd = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("👁️ Посмотреть расписание", callback_data=f"view_changed_schedule_{default_mode}_{first_change['date_str']}")],
+                    [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+                ])
+
+                try:
+                    await context.bot.send_message(user_id, full_msg, parse_mode=ParseMode.HTML, reply_markup=kbd)
+                    logger.info(f"✅ [{user_id}] Объединенное уведомление отправлено")
+                except Forbidden:
+                    context.bot_data['active_users'].discard(user_id)
+
         except Exception as e:
             logger.error(f"Ошибка при проверке расписания для пользователя {user_id}: {e}")
-
 
 async def cleanup_bot_data_job(context: ContextTypes.DEFAULT_TYPE):
     """Очистка старых данных из bot_data для предотвращения утечек памяти"""
