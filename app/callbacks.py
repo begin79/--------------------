@@ -237,9 +237,12 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Извлекаем mode и date из callback_data: "view_changed_schedule_student_2026-01-14"
             prefix = CallbackPrefix.VIEW_CHANGED_SCHEDULE.value
+            # Используем safe_answer_callback_query для всех ответов
+            from .handlers.utils import safe_answer_callback_query
+            
             if not data.startswith(prefix):
                 logger.error(f"Неверный формат callback для просмотра измененного расписания: {data}")
-                await update.callback_query.answer("Ошибка: неверный формат команды", show_alert=True)
+                await safe_answer_callback_query(update.callback_query, "Ошибка: неверный формат команды", show_alert=True)
                 return
             
             # Убираем префикс и разделяем по последнему подчеркиванию перед датой
@@ -247,14 +250,14 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Ищем последнее подчеркивание перед датой (дата всегда в формате YYYY-MM-DD)
             if "_" not in rest:
                 logger.error(f"Неверный формат callback для просмотра измененного расписания: {data}")
-                await update.callback_query.answer("Ошибка: неверный формат команды", show_alert=True)
+                await safe_answer_callback_query(update.callback_query, "Ошибка: неверный формат команды", show_alert=True)
                 return
             
             # Разделяем по первому подчеркиванию (mode_date)
             parts = rest.split("_", 1)
             if len(parts) != 2:
                 logger.error(f"Неверный формат callback для просмотра измененного расписания: {data}")
-                await update.callback_query.answer("Ошибка: неверный формат команды", show_alert=True)
+                await safe_answer_callback_query(update.callback_query, "Ошибка: неверный формат команды", show_alert=True)
                 return
             
             default_mode = parts[0]  # "student" или "teacher"
@@ -262,7 +265,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id = update.effective_user.id if update.effective_user else None
             
             if not user_id:
-                await update.callback_query.answer("Ошибка: не удалось определить пользователя", show_alert=True)
+                await safe_answer_callback_query(update.callback_query, "Ошибка: не удалось определить пользователя", show_alert=True)
                 return
             
             # Получаем сохраненные данные расписания
@@ -276,7 +279,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 mode = user_data.get(CTX_DEFAULT_MODE) or default_mode
                 
                 if not query:
-                    await update.callback_query.answer("❌ Группа/преподаватель не установлены", show_alert=True)
+                    await safe_answer_callback_query(update.callback_query, "❌ Группа/преподаватель не установлены", show_alert=True)
                     await start_command(update, context)
                     return
                 
@@ -286,7 +289,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pages, err = await safe_get_schedule(date_str, query, api_type, bot=context.bot)
                 
                 if err or not pages:
-                    await update.callback_query.answer(f"❌ Не удалось загрузить расписание: {err or 'Не найдено'}", show_alert=True)
+                    await safe_answer_callback_query(update.callback_query, f"❌ Не удалось загрузить расписание: {err or 'Не найдено'}", show_alert=True)
                     return
                 
                 schedule_data = {
@@ -309,7 +312,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await send_schedule_with_pagination(update, context, msg_to_edit=update.callback_query.message)
             except Exception as e:
                 logger.error(f"Ошибка при показе измененного расписания: {e}", exc_info=True)
-                await update.callback_query.answer("❌ Ошибка при загрузке расписания", show_alert=True)
+                await safe_answer_callback_query(update.callback_query, "❌ Ошибка при загрузке расписания", show_alert=True)
         elif data == CALLBACK_DATA_CANCEL_INPUT:
             from .handlers.utils import safe_answer_callback_query
             
@@ -597,21 +600,18 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if is_old_pattern:
                 # Это устаревший callback, просто отвечаем без предупреждения
+                from .handlers.utils import safe_answer_callback_query
                 logger.debug(f"Игнорирую устаревший callback: {data}")
-                await update.callback_query.answer("Эта функция больше не поддерживается", show_alert=False)
+                await safe_answer_callback_query(update.callback_query, "Эта функция больше не поддерживается", show_alert=False)
             else:
                 # Неизвестный callback - логируем как предупреждение для отладки
                 logger.warning(f"Неизвестный callback: {data} (user_id: {update.effective_user.id if update.effective_user else 'unknown'})")
-                try:
-                    await update.callback_query.answer("Неизвестная команда", show_alert=False)
-                except Exception:
-                    pass
+                from .handlers.utils import safe_answer_callback_query
+                await safe_answer_callback_query(update.callback_query, "Неизвестная команда", show_alert=False)
     except Exception as e:
         logger.error(f"Ошибка при обработке callback {data}: {e}", exc_info=True)
-        try:
-            await update.callback_query.answer("Произошла ошибка", show_alert=True)
-        except Exception:
-            pass
+        from .handlers.utils import safe_answer_callback_query
+        await safe_answer_callback_query(update.callback_query, "Произошла ошибка", show_alert=True)
 
 
 async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):

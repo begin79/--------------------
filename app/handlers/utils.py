@@ -18,12 +18,19 @@ async def safe_answer_callback_query(callback_query, text: str = "", show_alert:
     """
     Безопасно отвечает на callback query с обработкой ошибок timeout
     Возвращает True если ответ успешен, False если callback query истек
+    
+    Best Practice: Всегда использовать эту функцию вместо прямого вызова callback_query.answer()
     """
+    if not callback_query:
+        logger.debug("safe_answer_callback_query вызван с None callback_query")
+        return False
+    
     try:
         await callback_query.answer(text, show_alert=show_alert)
         return True
     except BadRequest as e:
-        if "query is too old" in str(e).lower() or "query id is invalid" in str(e).lower():
+        error_str = str(e).lower()
+        if "query is too old" in error_str or "query id is invalid" in error_str:
             logger.debug(f"Callback query истек: {e}")
             return False
         else:
@@ -37,18 +44,53 @@ async def safe_answer_callback_query(callback_query, text: str = "", show_alert:
         return False
 
 
-async def safe_edit_message_text(callback_query, text: str, reply_markup=None, parse_mode=None) -> bool:
+async def safe_edit_message_text(
+    callback_query, 
+    text: str, 
+    reply_markup=None, 
+    parse_mode=None,
+    message: Optional[Message] = None
+) -> bool:
     """
     Безопасно редактирует сообщение с обработкой ошибок
     Возвращает True если редактирование успешно, False если произошла ошибка
+    
+    Best Practice: Универсальная функция для безопасного редактирования сообщений.
+    Игнорирует ошибку "Message is not modified" (это не ошибка, если пользователь нажал кнопку дважды).
+    
+    Args:
+        callback_query: CallbackQuery объект (опционально, если передан message)
+        text: Текст сообщения
+        reply_markup: Клавиатура (опционально)
+        parse_mode: Режим парсинга (HTML/Markdown)
+        message: Message объект для редактирования (если не передан callback_query)
     """
+    target_message = None
+    bot = None
+    
+    if callback_query:
+        target_message = callback_query.message
+        bot = callback_query.message.get_bot() if target_message else None
+    elif message:
+        target_message = message
+        bot = message.get_bot() if message else None
+    else:
+        logger.warning("safe_edit_message_text вызван без callback_query или message")
+        return False
+    
+    if not target_message or not bot:
+        logger.warning("safe_edit_message_text: не удалось получить message или bot")
+        return False
+    
     try:
-        await callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+        await target_message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
         return True
     except BadRequest as e:
         error_str = str(e).lower()
         if "message is not modified" in error_str:
             # Сообщение уже имеет такой же текст - это не ошибка
+            # Пользователь мог нажать кнопку дважды - это нормальное поведение
+            logger.debug("Сообщение не изменено (пользователь мог нажать дважды) - это нормально")
             return True
         elif "message to edit not found" in error_str or "chat not found" in error_str:
             logger.debug(f"Сообщение не найдено для редактирования: {e}")
@@ -56,7 +98,7 @@ async def safe_edit_message_text(callback_query, text: str, reply_markup=None, p
         elif "no text in the message" in error_str:
             # Сообщение не содержит текста (например, только фото) - отправляем новое
             try:
-                await callback_query.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+                await target_message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
                 return True
             except Exception as reply_error:
                 logger.debug(f"Ошибка при отправке нового сообщения: {reply_error}", exc_info=True)
@@ -296,4 +338,3 @@ def get_default_reply_keyboard():
         resize_keyboard=True,
         one_time_keyboard=False
     )
-
