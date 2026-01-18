@@ -204,12 +204,11 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("user_dismiss_admin_"):
             # Обработка кнопки "Спасибо" / "Понятно"
             from .handlers.utils import safe_answer_callback_query
-            from .handlers.start import start_command
             
             # Отвечаем на callback
             await safe_answer_callback_query(update.callback_query, "✅ Хорошо!")
             
-            # Открываем меню (/start)
+            # Открываем меню (/start) - используем глобальный импорт start_command
             try:
                 await start_command(update, context)
             except Exception as e:
