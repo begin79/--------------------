@@ -1326,8 +1326,8 @@ async def admin_confirm_broadcast_callback(update: Update, context: ContextTypes
 
     await update.callback_query.edit_message_text(f"📤 Начинаю рассылку для {total} пользователей...{info_suffix}")
 
-    # Формируем сообщение с эмодзи книги перед текстом
-    full_message = "📚 " + escape_html(message_text)
+    # Формируем сообщение с эмодзи открытой книги перед текстом
+    full_message = "📖 " + escape_html(message_text)
     
     # Создаем клавиатуру только с кнопкой "Спасибо" для массовой рассылки
     broadcast_keyboard = InlineKeyboardMarkup([

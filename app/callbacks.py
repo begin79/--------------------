@@ -84,7 +84,13 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = update.callback_query.data
 
     # Админские callback'и обрабатываются отдельно
-    if data.startswith("admin_") or (update.effective_user and is_admin(update.effective_user.id) and data in [
+    # Проверяем, является ли пользователь администратором
+    user_is_admin = False
+    if update.effective_user:
+        from .admin.utils import is_admin as check_is_admin
+        user_is_admin = check_is_admin(update.effective_user.id)
+    
+    if data.startswith("admin_") or (update.effective_user and user_is_admin and data in [
         "admin_menu", "admin_stats", "admin_bot_status", "admin_toggle_bot",
         "admin_set_maintenance_msg", "admin_users", "admin_cache", "admin_logs",
         "admin_broadcast", "admin_add_admin", "admin_remove_admin", "admin_list_admins",
