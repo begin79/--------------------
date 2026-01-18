@@ -30,6 +30,8 @@ from ..database import db
 from ..monitoring import monitor
 from ..admin.utils import get_root_admin_id
 from .utils import safe_edit_message_text, get_default_reply_keyboard, user_busy_context
+from ..state_manager_v2 import StateManager, UserState, get_state_manager
+from ..input_validator import sanitize_query
 
 logger = logging.getLogger(__name__)
 
@@ -70,16 +72,15 @@ async def handle_mode_selection(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     user_data = context.user_data
+    manager = get_state_manager(user_data)
     
     # Устанавливаем режим
     user_data[CTX_MODE] = mode
     
-    # ВАЖНО: Очищаем CTX_AWAITING_FEEDBACK при выборе режима, чтобы избежать конфликтов
-    user_data.pop(CTX_AWAITING_FEEDBACK, None)
-    
-    # Если это для установки по умолчанию, устанавливаем флаг
+    # Если это для установки по умолчанию, устанавливаем состояние через менеджер
+    # Менеджер автоматически очистит конфликтующие состояния (например, AWAITING_FEEDBACK)
     if for_default:
-        user_data[CTX_AWAITING_DEFAULT_QUERY] = True
+        manager.set_state(UserState.AWAITING_DEFAULT_QUERY)
     
     mode_text = ENTITY_GROUP if mode == MODE_STUDENT else ENTITY_TEACHER
     
@@ -136,9 +137,14 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
     username = update.effective_user.username or "без username"
     user_data = context.user_data
 
-    # При входе в поиск расписания сбрасываем режим ожидания отзыва,
+    # При входе в поиск расписания очищаем режим ожидания отзыва через менеджер
     # чтобы ввод группы/преподавателя не перехватывался обработчиком feedback.
-    user_data.pop(CTX_AWAITING_FEEDBACK, None)
+    manager = get_state_manager(user_data)
+    if manager.has_state(UserState.AWAITING_FEEDBACK):
+        manager.clear_state(UserState.AWAITING_FEEDBACK)
+
+    # Санитизация ввода
+    text = sanitize_query(text)
 
     # Используем context manager для автоматического управления блокировкой
     async with user_busy_context(user_data):
@@ -235,7 +241,7 @@ async def handle_schedule_search(update: Update, context: ContextTypes.DEFAULT_T
             )
 
 
-async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str, msg_to_edit: Optional[Message] = None):
+async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str, msg_to_edit: Optional[Message] = None) -> None:
     if not update.effective_user:
         logger.error("fetch_and_display_schedule вызван без effective_user")
         return
@@ -245,13 +251,42 @@ async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAU
     user_data = context.user_data
 
     # Любой прямой заход в показ расписания должен сбрасывать режим отзыва.
-    user_data.pop(CTX_AWAITING_FEEDBACK, None)
+    manager = get_state_manager(user_data)
+    if manager.has_state(UserState.AWAITING_FEEDBACK):
+        manager.clear_state(UserState.AWAITING_FEEDBACK)
 
     # Используем context manager для автоматического управления блокировкой
     async with user_busy_context(user_data):
         mode = user_data.get(CTX_MODE)
         api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
-        date = user_data.setdefault(CTX_SELECTED_DATE, datetime.date.today().strftime("%Y-%m-%d"))
+        
+        # Определяем дату для показа расписания
+        # Если дата не установлена, используем сегодня (или следующий рабочий день, если сегодня воскресенье)
+        if CTX_SELECTED_DATE not in user_data:
+            today = datetime.date.today()
+            # Если сегодня воскресенье, показываем следующий рабочий день (понедельник)
+            if today.weekday() == 6:  # Воскресенье
+                date = (today + datetime.timedelta(days=1)).strftime("%Y-%m-%d")  # Понедельник
+            else:
+                date = today.strftime("%Y-%m-%d")
+            user_data[CTX_SELECTED_DATE] = date
+        else:
+            date = user_data[CTX_SELECTED_DATE]
+            # Проверяем, если сохраненная дата - воскресенье, заменяем на понедельник
+            try:
+                date_obj = datetime.datetime.strptime(date, "%Y-%m-%d").date()
+                if date_obj.weekday() == 6:  # Воскресенье
+                    date = (date_obj + datetime.timedelta(days=1)).strftime("%Y-%m-%d")  # Понедельник
+                    user_data[CTX_SELECTED_DATE] = date
+            except (ValueError, TypeError):
+                # Если дата невалидна, используем сегодня
+                today = datetime.date.today()
+                if today.weekday() == 6:  # Воскресенье
+                    date = (today + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+                else:
+                    date = today.strftime("%Y-%m-%d")
+                user_data[CTX_SELECTED_DATE] = date
+        
         user_data[CTX_LAST_QUERY] = query
 
         mode_text = ENTITY_GROUP_GENITIVE if mode == MODE_STUDENT else ENTITY_TEACHER_GENITIVE
@@ -314,7 +349,7 @@ async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAU
         db.log_activity(user_id, "view_schedule", f"mode={mode}, query={query}, date={date}")
 
 
-async def send_schedule_with_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE, msg_to_edit: Optional[Message] = None):
+async def send_schedule_with_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE, msg_to_edit: Optional[Message] = None) -> None:
     user_data = context.user_data
     pages, idx, mode, query = user_data.get(CTX_SCHEDULE_PAGES), user_data.get(CTX_CURRENT_PAGE_INDEX, 0), user_data.get(CTX_MODE), user_data.get(CTX_LAST_QUERY)
 
@@ -436,7 +471,7 @@ async def send_schedule_with_pagination(update: Update, context: ContextTypes.DE
             logger.error(f"Ошибка при обновлении расписания: {e}")
 
 
-async def schedule_navigation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def schedule_navigation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     username = update.effective_user.username or "без username"
     query_obj, data = update.callback_query, update.callback_query.data
