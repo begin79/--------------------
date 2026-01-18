@@ -204,7 +204,16 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("user_dismiss_admin_"):
             # Обработка кнопки "Спасибо" / "Понятно"
             from .handlers.utils import safe_answer_callback_query
+            from .handlers.start import start_command
+            
+            # Отвечаем на callback
             await safe_answer_callback_query(update.callback_query, "✅ Хорошо!")
+            
+            # Открываем меню (/start)
+            try:
+                await start_command(update, context)
+            except Exception as e:
+                logger.error(f"Ошибка при открытии меню после нажатия 'Спасибо': {e}", exc_info=True)
         elif data.startswith(CALLBACK_DATA_PREV_SCHEDULE_PREFIX) or \
              data.startswith(CALLBACK_DATA_NEXT_SCHEDULE_PREFIX) or \
              data.startswith(CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX):
