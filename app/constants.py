@@ -76,6 +76,7 @@ class CallbackPrefix(str, Enum):
     EXPORT_SEMESTER = "export_semester_"
     VIEW_CHANGED_SCHEDULE = "view_changed_schedule_"
     NOTIFICATION_OPEN = "notification_open_schedule_"
+    JUMP_TO_DATE = "jump_to_"  # Навигация по датам: jump_to_2026-01-20
 
 # Для обратной совместимости
 CALLBACK_DATA_MODE_STUDENT = CallbackData.MODE_STUDENT.value
@@ -105,6 +106,7 @@ CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX = CallbackPrefix.REFRESH.value
 CALLBACK_DATA_PREV_SCHEDULE_PREFIX = CallbackPrefix.PREV.value
 CALLBACK_DATA_NEXT_SCHEDULE_PREFIX = CallbackPrefix.NEXT.value
 CALLBACK_DATA_DATE_PREFIX = CallbackPrefix.DATE.value
+CALLBACK_DATA_JUMP_TO_DATE_PREFIX = CallbackPrefix.JUMP_TO_DATE.value
 CALLBACK_DATA_DATE_TODAY = f"{CallbackPrefix.DATE.value}today"
 CALLBACK_DATA_DATE_TOMORROW = f"{CallbackPrefix.DATE.value}tomorrow"
 CALLBACK_DATA_DATE_MANUAL = f"{CallbackPrefix.DATE.value}manual"

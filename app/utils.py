@@ -114,6 +114,19 @@ def get_pair_type_emoji(subject: str) -> str:
     return PAIR_TYPE_EMOJIS.get(pair_type, PAIR_TYPE_EMOJIS["default"])
 
 
+def get_moscow_date() -> datetime.date:
+    """
+    Получает текущую дату в московском времени (UTC+3).
+    Единый источник истины для определения "сегодня" в боте.
+    
+    Returns:
+        Текущая дата по московскому времени
+    """
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    today_msk = (now_utc + datetime.timedelta(hours=3)).date()
+    return today_msk
+
+
 def get_next_weekday(date: datetime.date) -> datetime.date:
     """
     Получить следующий логический рабочий день для проверки.

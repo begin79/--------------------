@@ -19,7 +19,7 @@ from ..constants import (
     CALLBACK_DATA_BACK_TO_START, CALLBACK_DATA_SETTINGS_MENU,
     CALLBACK_DATA_PREV_SCHEDULE_PREFIX, CALLBACK_DATA_NEXT_SCHEDULE_PREFIX,
     CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX, CALLBACK_DATA_EXPORT_MENU,
-    CALLBACK_DATA_CANCEL_INPUT,
+    CALLBACK_DATA_CANCEL_INPUT, CALLBACK_DATA_JUMP_TO_DATE_PREFIX,
     MODE_STUDENT, API_TYPE_GROUP, API_TYPE_TEACHER,
     ENTITY_GROUP, ENTITY_GROUPS, ENTITY_GROUP_GENITIVE, ENTITY_TEACHER, ENTITY_TEACHER_GENITIVE,
     GROUP_NAME_PATTERN,
@@ -261,9 +261,10 @@ async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAU
         api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
         
         # Определяем дату для показа расписания
-        # Если дата не установлена, используем сегодня (или следующий рабочий день, если сегодня воскресенье)
+        # Используем московское время для определения "сегодня"
         if CTX_SELECTED_DATE not in user_data:
-            today = datetime.date.today()
+            from ..utils import get_moscow_date
+            today = get_moscow_date()
             # Если сегодня воскресенье, показываем следующий рабочий день (понедельник)
             if today.weekday() == 6:  # Воскресенье
                 date = (today + datetime.timedelta(days=1)).strftime("%Y-%m-%d")  # Понедельник
@@ -279,8 +280,9 @@ async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAU
                     date = (date_obj + datetime.timedelta(days=1)).strftime("%Y-%m-%d")  # Понедельник
                     user_data[CTX_SELECTED_DATE] = date
             except (ValueError, TypeError):
-                # Если дата невалидна, используем сегодня
-                today = datetime.date.today()
+                # Если дата невалидна, используем сегодня (московское время)
+                from ..utils import get_moscow_date
+                today = get_moscow_date()
                 if today.weekday() == 6:  # Воскресенье
                     date = (today + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
                 else:
@@ -326,20 +328,62 @@ async def fetch_and_display_schedule(update: Update, context: ContextTypes.DEFAU
                 await target.reply_text(err or "Не удалось получить расписание.", reply_markup=reply_keyboard)
             return
 
-        if "Расписание не найдено" in pages[0]:
-            kbd = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]])
-            target = msg_to_edit or (update.callback_query and update.callback_query.message)
-            if target:
-                try:
-                    await target.edit_text(pages[0], reply_markup=kbd, parse_mode=ParseMode.HTML)
-                except BadRequest as e:
-                    if "no text in the message" in str(e).lower():
-                        # Сообщение содержит фото/документ, отправляем новое
-                        await target.reply_text(pages[0], reply_markup=kbd, parse_mode=ParseMode.HTML)
-                    else:
-                        raise
-            else:
-                await update.effective_message.reply_text(pages[0], reply_markup=kbd, parse_mode=ParseMode.HTML)
+        # Обработка пустых дней - проверяем, есть ли пары
+        is_empty = False
+        if pages and ("Расписание не найдено" in pages[0] or "Занятий нет" in pages[0] or "не найдено" in pages[0] or not pages[0].strip()):
+            is_empty = True
+        
+        if is_empty:
+            # Формируем красивое сообщение для пустого дня с навигацией
+            try:
+                date_obj = datetime.datetime.strptime(date, "%Y-%m-%d").date()
+                weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+                weekday_name = weekdays[date_obj.weekday()]
+                date_display = date_obj.strftime("%d.%m.%Y")
+                
+                msg = f"📅 На {weekday_name}, {date_display} расписание пусто или пар не назначено ☕️"
+                
+                # Формируем кнопки навигации по датам
+                prev_date = date_obj - datetime.timedelta(days=1)
+                next_date = date_obj + datetime.timedelta(days=1)
+                prev_date_str = prev_date.strftime("%Y-%m-%d")
+                next_date_str = next_date.strftime("%Y-%m-%d")
+                
+                nav_buttons = []
+                nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"{CALLBACK_DATA_JUMP_TO_DATE_PREFIX}{prev_date_str}"))
+                nav_buttons.append(InlineKeyboardButton("🔄 Обновить", callback_data=f"{CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX}{mode}_0"))
+                nav_buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"{CALLBACK_DATA_JUMP_TO_DATE_PREFIX}{next_date_str}"))
+                
+                kbd = InlineKeyboardMarkup([
+                    nav_buttons,
+                    [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+                ])
+                
+                target = msg_to_edit or (update.callback_query and update.callback_query.message)
+                if target:
+                    try:
+                        await target.edit_text(msg, reply_markup=kbd, parse_mode=ParseMode.HTML)
+                    except BadRequest as e:
+                        if "no text in the message" in str(e).lower():
+                            await target.reply_text(msg, reply_markup=kbd, parse_mode=ParseMode.HTML)
+                        else:
+                            raise
+                else:
+                    await update.effective_message.reply_text(msg, reply_markup=kbd, parse_mode=ParseMode.HTML)
+            except (ValueError, TypeError) as e:
+                # Если не удалось распарсить дату, используем простое сообщение
+                kbd = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]])
+                target = msg_to_edit or (update.callback_query and update.callback_query.message)
+                if target:
+                    try:
+                        await target.edit_text(pages[0] if pages else "Расписание не найдено", reply_markup=kbd, parse_mode=ParseMode.HTML)
+                    except BadRequest as e2:
+                        if "no text in the message" in str(e2).lower():
+                            await target.reply_text(pages[0] if pages else "Расписание не найдено", reply_markup=kbd, parse_mode=ParseMode.HTML)
+                        else:
+                            raise
+                else:
+                    await update.effective_message.reply_text(pages[0] if pages else "Расписание не найдено", reply_markup=kbd, parse_mode=ParseMode.HTML)
             return
 
         user_data[CTX_SCHEDULE_PAGES], user_data[CTX_CURRENT_PAGE_INDEX] = pages, 0
@@ -410,7 +454,7 @@ async def send_schedule_with_pagination(update: Update, context: ContextTypes.DE
 
     # Создаем кнопки навигации
 
-    # Первая строка: навигация по страницам
+    # Первая строка: навигация по страницам (если несколько страниц)
     nav_row = []
     if idx > 0:
         prev_callback = f"{CALLBACK_DATA_PREV_SCHEDULE_PREFIX}{mode}_{idx-1}"
@@ -424,6 +468,30 @@ async def send_schedule_with_pagination(update: Update, context: ContextTypes.DE
         nav_row.append(InlineKeyboardButton("Следующая ➡️", callback_data=next_callback))
 
     kbd_rows = [nav_row] if nav_row else []
+    
+    # Вторая строка: навигация по датам (всегда показываем)
+    try:
+        selected_date = user_data.get(CTX_SELECTED_DATE)
+        if selected_date:
+            date_obj = datetime.datetime.strptime(selected_date, "%Y-%m-%d").date()
+            prev_date = date_obj - datetime.timedelta(days=1)
+            next_date = date_obj + datetime.timedelta(days=1)
+            prev_date_str = prev_date.strftime("%Y-%m-%d")
+            next_date_str = next_date.strftime("%Y-%m-%d")
+            
+            date_nav_row = []
+            date_nav_row.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"{CALLBACK_DATA_JUMP_TO_DATE_PREFIX}{prev_date_str}"))
+            date_nav_row.append(InlineKeyboardButton("🔄 Обновить", callback_data=refresh_callback))
+            date_nav_row.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"{CALLBACK_DATA_JUMP_TO_DATE_PREFIX}{next_date_str}"))
+            
+            # Добавляем навигацию по датам после навигации по страницам (если она есть) или вместо неё
+            if nav_row:
+                kbd_rows.append(date_nav_row)
+            else:
+                kbd_rows = [date_nav_row]
+    except (ValueError, TypeError):
+        # Если не удалось распарсить дату, пропускаем навигацию по датам
+        pass
 
     # Вторая строка: экспорт
     if query:

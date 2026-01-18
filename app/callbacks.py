@@ -17,7 +17,7 @@ from .constants import (
     CALLBACK_DATA_EXPORT_WEEK_FILE, CALLBACK_DATA_EXPORT_DAY_IMAGE, CALLBACK_DATA_EXPORT_DAYS_IMAGES,
     CALLBACK_DATA_EXPORT_SEMESTER, CALLBACK_DATA_BACK_TO_SCHEDULE,
     CALLBACK_DATA_PREV_SCHEDULE_PREFIX, CALLBACK_DATA_NEXT_SCHEDULE_PREFIX,
-    CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX, CALLBACK_DATA_DATE_PREFIX,
+    CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX, CALLBACK_DATA_DATE_PREFIX, CALLBACK_DATA_JUMP_TO_DATE_PREFIX,
     CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX, CALLBACK_DATA_CANCEL_INPUT,
     CALLBACK_DATA_CONFIRM_MODE, CallbackData, CallbackPrefix,
     CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE, CTX_SELECTED_DATE, CTX_LAST_QUERY,
@@ -218,6 +218,29 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
              data.startswith(CALLBACK_DATA_NEXT_SCHEDULE_PREFIX) or \
              data.startswith(CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX):
             await schedule_navigation_callback(update, context)
+        elif data.startswith(CALLBACK_DATA_JUMP_TO_DATE_PREFIX):
+            # Обработка навигации по датам: jump_to_2026-01-20
+            from .handlers.utils import safe_answer_callback_query
+            await safe_answer_callback_query(update.callback_query, "📅 Загружаю расписание...")
+            
+            date_str = data.replace(CALLBACK_DATA_JUMP_TO_DATE_PREFIX, "")
+            user_data = context.user_data
+            
+            # Устанавливаем дату
+            user_data[CTX_SELECTED_DATE] = date_str
+            
+            # Получаем запрос из контекста
+            query = user_data.get(CTX_LAST_QUERY) or user_data.get(CTX_DEFAULT_QUERY)
+            mode = user_data.get(CTX_MODE) or user_data.get(CTX_DEFAULT_MODE)
+            
+            if not query or not mode:
+                await safe_answer_callback_query(update.callback_query, "❌ Группа/преподаватель не установлены", show_alert=True)
+                await start_command(update, context)
+                return
+            
+            # Загружаем расписание на указанную дату
+            from .handlers.schedule import fetch_and_display_schedule
+            await fetch_and_display_schedule(update, context, query, msg_to_edit=update.callback_query.message)
         elif data.startswith(CALLBACK_DATA_DATE_PREFIX):
             # Обработка выбора даты - будет реализовано позже
             from .handlers.utils import safe_answer_callback_query
@@ -395,8 +418,9 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await start_command(update, context)
                 return
             
-            # Устанавливаем текущую дату
-            today = datetime.date.today()
+            # Устанавливаем текущую дату (московское время)
+            from .utils import get_moscow_date
+            today = get_moscow_date()
             date_str = today.strftime("%Y-%m-%d")
             
             user_data[CTX_SELECTED_DATE] = date_str

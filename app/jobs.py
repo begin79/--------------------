@@ -1,7 +1,7 @@
 import asyncio
 import datetime
 import logging
-from typing import Optional, List, Dict, Any
+from typing import List, Dict, Any
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ParseMode
 from telegram.error import Forbidden, NetworkError, TimedOut
@@ -9,11 +9,11 @@ from telegram.ext import ContextTypes
 
 from .constants import (
     API_TYPE_GROUP, API_TYPE_TEACHER, CALLBACK_DATA_BACK_TO_START,
-    CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX, CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE,
+    CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX, CALLBACK_DATA_JUMP_TO_DATE_PREFIX, CTX_DEFAULT_QUERY, CTX_DEFAULT_MODE,
     ENTITY_GROUP_GENITIVE, ENTITY_TEACHER_GENITIVE, MODE_STUDENT
 )
 from .schedule import get_schedule, get_schedule_structured
-from .utils import escape_html, hash_schedule, compare_schedules, format_schedule_changes, get_next_weekday
+from .utils import escape_html, hash_schedule, compare_schedules, format_schedule_changes, get_moscow_date
 from .admin.database import admin_db
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ def get_target_date_for_notification(today: datetime.date) -> datetime.date:
 async def daily_schedule_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Ежедневное уведомление о расписании.
-    Улучшенная версия с явной обработкой выходных и ошибок.
+    Улучшенная версия с умными уведомлениями: динамические заголовки, обработка выходных, кнопки навигации.
     """
     job = context.job
     chat_id = job.chat_id
@@ -89,16 +89,16 @@ async def daily_schedule_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         # Используем единый источник истины по дате — московское время (UTC+3)
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
-        today_msk = (now_utc + datetime.timedelta(hours=3)).date()
+        today_msk = get_moscow_date()
         
         # Если сегодня воскресенье, не отправляем уведомление
         if today_msk.weekday() == 6:
-            logger.debug(f"Сегодня воскресенье, уведомление не отправляется")
+            logger.debug("Сегодня воскресенье, уведомление не отправляется")
             return
         
         # Определяем дату для уведомления с учетом выходных
         target_day = get_target_date_for_notification(today_msk)
+        tomorrow_msk = today_msk + datetime.timedelta(days=1)
         
         api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
         
@@ -118,32 +118,73 @@ async def daily_schedule_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.error(f"Ошибка при получении расписания для уведомления: {e}", exc_info=True)
             pages, err = None, f"Ошибка: {str(e)}"
 
+        # Формируем динамический заголовок с датой
+        weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+        weekday_name = weekdays[target_day.weekday()]
+        date_str = target_day.strftime("%d.%m")
+        
+        # Определяем заголовок для дня
+        if target_day == tomorrow_msk:
+            header_text = f"📅 Расписание на завтра ({weekday_name}, {date_str}):"
+        else:
+            header_text = f"📅 Расписание на {weekdays[target_day.weekday()].lower()} ({weekday_name}, {date_str}):"
+
+        # Обработка воскресенья: если сегодня суббота и завтра воскресенье без пар
+        if today_msk.weekday() == 5 and target_day.weekday() == 6:  # Сегодня суббота, завтра воскресенье
+            if not pages or not err and pages and ("Занятий нет" in pages[0] or "не найдено" in pages[0] or not pages[0].strip()):
+                # Воскресенье без пар - отправляем сообщение и кнопку "Посмотреть Понедельник"
+                monday = target_day + datetime.timedelta(days=1)
+                monday_str = monday.strftime("%Y-%m-%d")
+                monday_weekday = weekdays[monday.weekday()]
+                
+                msg = f"🎉 Завтра (Воскресенье, {date_str}) занятий нет. Отдыхайте!"
+                
+                kbd = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(f"📅 Посмотреть {monday_weekday}", callback_data=f"{CALLBACK_DATA_JUMP_TO_DATE_PREFIX}{monday_str}")],
+                    [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+                ])
+                
+                try:
+                    await context.bot.send_message(job.chat_id, msg, parse_mode=ParseMode.HTML, reply_markup=kbd)
+                    logger.info(f"✅ [{chat_id}] Уведомление о выходном отправлено")
+                except Forbidden:
+                    logger.warning(f"Пользователь {job.chat_id} заблокировал бота. Удаляю задачу.")
+                    job.schedule_removal()
+                except (NetworkError, TimedOut) as e:
+                    logger.warning(f"Сетевая ошибка при отправке уведомления пользователю {job.chat_id}: {e}")
+                return
+
+        # Обычное уведомление
         if pages:
             logger.info(f"✅ [{chat_id}] Уведомление отправлено успешно")
         else:
             logger.warning(f"❌ [{chat_id}] Ошибка получения расписания для уведомления: {err}")
 
-        # Определяем текст для дня (также в московском времени)
-        tomorrow_msk = today_msk + datetime.timedelta(days=1)
-        if target_day == tomorrow_msk:
-            day_text = "на завтра"
-        else:
-            weekdays = ["понедельник", "вторник", "среду", "четверг", "пятницу", "субботу", "воскресенье"]
-            weekday_name = weekdays[target_day.weekday()]
-            day_text = f"на {weekday_name}"
-
-        msg = f"Не удалось получить расписание {day_text} для '{escape_html(job.data['query'])}'."
+        # Формируем сообщение с динамическим заголовком
         if not err and pages:
-            header = f"🗓️ <b>Расписание {day_text} ({target_day.strftime('%d.%m.%Y')}) для {escape_html(job.data['query'])}</b>\n\n"
             schedule = pages[0]
             if "Занятий нет" in schedule or "не найдено" in schedule:
-                msg = f"🎉 {day_text.capitalize()} для '{escape_html(job.data['query'])}' занятий нет!"
+                msg = f"{header_text}\n\n🎉 Занятий нет!"
             else:
-                msg = header + schedule
+                msg = f"<b>{header_text}</b>\n\n{schedule}"
+        else:
+            msg = f"<b>{header_text}</b>\n\n❌ Не удалось получить расписание для '{escape_html(query)}': {err or 'Ошибка получения данных'}"
 
-        open_callback = f"{CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX}{job.data['mode']}_{target_day.strftime('%Y-%m-%d')}"
+        # Формируем кнопки навигации
+        target_date_str = target_day.strftime("%Y-%m-%d")
+        prev_date = target_day - datetime.timedelta(days=1)
+        next_date = target_day + datetime.timedelta(days=1)
+        prev_date_str = prev_date.strftime("%Y-%m-%d")
+        next_date_str = next_date.strftime("%Y-%m-%d")
+        
+        nav_buttons = []
+        nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"{CALLBACK_DATA_JUMP_TO_DATE_PREFIX}{prev_date_str}"))
+        nav_buttons.append(InlineKeyboardButton("🔄 Обновить", callback_data=f"{CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX}{mode}_{target_date_str}"))
+        nav_buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"{CALLBACK_DATA_JUMP_TO_DATE_PREFIX}{next_date_str}"))
+        
         kbd = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📋 Перейти к расписанию", callback_data=open_callback)],
+            nav_buttons,
+            [InlineKeyboardButton("📋 Перейти к расписанию", callback_data=f"{CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX}{mode}_{target_date_str}")],
             [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
         ])
 
@@ -166,7 +207,7 @@ async def check_schedule_changes_job(context: ContextTypes.DEFAULT_TYPE):
     if 'users_data_cache' not in context.bot_data:
         context.bot_data['users_data_cache'] = {}
 
-    today = datetime.date.today()
+    today = get_moscow_date()
     
     # Определяем даты для проверки с учетом выходных
     dates_to_check: List[datetime.date] = []
