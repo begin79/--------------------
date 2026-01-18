@@ -1,9 +1,10 @@
 import asyncio
 import datetime
 import logging
+from typing import Optional, List, Dict, Any
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ParseMode
-from telegram.error import Forbidden
+from telegram.error import Forbidden, NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
 from .constants import (
@@ -12,7 +13,7 @@ from .constants import (
     ENTITY_GROUP_GENITIVE, ENTITY_TEACHER_GENITIVE, MODE_STUDENT
 )
 from .schedule import get_schedule, get_schedule_structured
-from .utils import escape_html, hash_schedule, compare_schedules, format_schedule_changes
+from .utils import escape_html, hash_schedule, compare_schedules, format_schedule_changes, get_next_weekday
 from .admin.database import admin_db
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,64 @@ logger = logging.getLogger(__name__)
 MAX_PHOTO_SIZE = 10 * 1024 * 1024  # 10MB - лимит Telegram для фото
 MAX_DOCUMENT_SIZE = 50 * 1024 * 1024  # 50MB - лимит Telegram для документов
 
-async def daily_schedule_job(context: ContextTypes.DEFAULT_TYPE):
+
+def is_weekend(date: datetime.date) -> bool:
+    """
+    Проверяет, является ли дата выходным днем.
+    
+    Args:
+        date: Дата для проверки
+    
+    Returns:
+        True если это суббота или воскресенье
+    """
+    return date.weekday() >= 5  # 5 = суббота, 6 = воскресенье
+
+
+def get_next_workday(date: datetime.date) -> datetime.date:
+    """
+    Получает следующий рабочий день после указанной даты.
+    Пропускает воскресенье.
+    
+    Args:
+        date: Исходная дата
+    
+    Returns:
+        Следующий рабочий день
+    """
+    next_day = date + datetime.timedelta(days=1)
+    
+    # Если следующий день - воскресенье, пропускаем его
+    if next_day.weekday() == 6:  # Воскресенье
+        next_day = next_day + datetime.timedelta(days=1)  # Понедельник
+    
+    return next_day
+
+
+def get_target_date_for_notification(today: datetime.date) -> datetime.date:
+    """
+    Определяет дату для уведомления, учитывая выходные.
+    
+    Args:
+        today: Сегодняшняя дата
+    
+    Returns:
+        Дата для уведомления
+    """
+    # Отправляем расписание на завтра
+    tomorrow = today + datetime.timedelta(days=1)
+    
+    # Если завтра - воскресенье, отправляем на понедельник
+    if tomorrow.weekday() == 6:  # Воскресенье
+        return tomorrow + datetime.timedelta(days=1)  # Понедельник
+    
+    return tomorrow
+
+async def daily_schedule_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Ежедневное уведомление о расписании.
+    Улучшенная версия с явной обработкой выходных и ошибок.
+    """
     job = context.job
     chat_id = job.chat_id
     query = job.data["query"]
@@ -29,61 +87,76 @@ async def daily_schedule_job(context: ContextTypes.DEFAULT_TYPE):
     mode_text = ENTITY_GROUP_GENITIVE if mode == MODE_STUDENT else ENTITY_TEACHER_GENITIVE
     logger.info(f"🔔 [{chat_id}] → Ежедневное уведомление для {mode_text} '{query}'")
 
-    # Используем единый источник истины по дате — московское время (UTC+3),
-    # чтобы избежать сдвига на один день при разнице таймзон сервера и пользователей.
-    now_utc = datetime.datetime.now(datetime.timezone.utc)
-    today_msk = (now_utc + datetime.timedelta(hours=3)).date()
-
-    # Отправляем расписание на завтра в московском времени
-    target_day = today_msk + datetime.timedelta(days=1)
-    api_type = API_TYPE_GROUP if job.data["mode"] == MODE_STUDENT else API_TYPE_TEACHER
-    # Используем таймаут для уведомлений, чтобы не блокировать другие задачи
     try:
-        pages, err = await asyncio.wait_for(
-            get_schedule(target_day.strftime("%Y-%m-%d"), job.data["query"], api_type),
-            timeout=12.0  # Уменьшен таймаут для быстрых уведомлений
-        )
-    except asyncio.TimeoutError:
-        logger.warning(f"Таймаут при получении расписания для уведомления {job.data['query']}")
-        pages, err = None, "Таймаут"
-    except Exception as e:
-        logger.error(f"Ошибка при получении расписания для уведомления: {e}")
-        pages, err = None, str(e)
+        # Используем единый источник истины по дате — московское время (UTC+3)
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        today_msk = (now_utc + datetime.timedelta(hours=3)).date()
+        
+        # Если сегодня воскресенье, не отправляем уведомление
+        if today_msk.weekday() == 6:
+            logger.debug(f"Сегодня воскресенье, уведомление не отправляется")
+            return
+        
+        # Определяем дату для уведомления с учетом выходных
+        target_day = get_target_date_for_notification(today_msk)
+        
+        api_type = API_TYPE_GROUP if mode == MODE_STUDENT else API_TYPE_TEACHER
+        
+        # Получаем расписание с таймаутом и улучшенной обработкой ошибок
+        try:
+            pages, err = await asyncio.wait_for(
+                get_schedule(target_day.strftime("%Y-%m-%d"), query, api_type),
+                timeout=12.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Таймаут при получении расписания для уведомления {query}")
+            pages, err = None, "Превышено время ожидания ответа от сервера"
+        except (NetworkError, TimedOut) as e:
+            logger.warning(f"Сетевая ошибка при получении расписания для уведомления: {e}")
+            pages, err = None, "Проблемы с подключением к серверу"
+        except Exception as e:
+            logger.error(f"Ошибка при получении расписания для уведомления: {e}", exc_info=True)
+            pages, err = None, f"Ошибка: {str(e)}"
 
-    if pages:
-        logger.info(f"✅ [{chat_id}] Уведомление отправлено успешно")
-    else:
-        logger.warning(f"❌ [{chat_id}] Ошибка получения расписания для уведомления: {err}")
-
-    # Определяем текст для дня (также в московском времени)
-    tomorrow_msk = today_msk + datetime.timedelta(days=1)
-    if target_day == tomorrow_msk:
-        day_text = "на завтра"
-    else:
-        weekdays = ["понедельник", "вторник", "среду", "четверг", "пятницу", "субботу", "воскресенье"]
-        weekday_name = weekdays[target_day.weekday()]
-        day_text = f"на {weekday_name}"
-
-    msg = f"Не удалось получить расписание {day_text} для '{escape_html(job.data['query'])}'."
-    if not err and pages:
-        header = f"🗓️ <b>Расписание {day_text} ({target_day.strftime('%d.%m.%Y')}) для {escape_html(job.data['query'])}</b>\n\n"
-        schedule = pages[0]
-        if "Занятий нет" in schedule or "не найдено" in schedule:
-            msg = f"🎉 {day_text.capitalize()} для '{escape_html(job.data['query'])}' занятий нет!"
+        if pages:
+            logger.info(f"✅ [{chat_id}] Уведомление отправлено успешно")
         else:
-            msg = header + schedule
+            logger.warning(f"❌ [{chat_id}] Ошибка получения расписания для уведомления: {err}")
 
-    open_callback = f"{CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX}{job.data['mode']}_{target_day.strftime('%Y-%m-%d')}"
-    kbd = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Перейти к расписанию", callback_data=open_callback)],
-        [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
-    ])
+        # Определяем текст для дня (также в московском времени)
+        tomorrow_msk = today_msk + datetime.timedelta(days=1)
+        if target_day == tomorrow_msk:
+            day_text = "на завтра"
+        else:
+            weekdays = ["понедельник", "вторник", "среду", "четверг", "пятницу", "субботу", "воскресенье"]
+            weekday_name = weekdays[target_day.weekday()]
+            day_text = f"на {weekday_name}"
 
-    try:
-        await context.bot.send_message(job.chat_id, msg, parse_mode=ParseMode.HTML, reply_markup=kbd)
-    except Forbidden:
-        logger.warning(f"Пользователь {job.chat_id} заблокировал бота. Удаляю задачу.")
-        job.schedule_removal()
+        msg = f"Не удалось получить расписание {day_text} для '{escape_html(job.data['query'])}'."
+        if not err and pages:
+            header = f"🗓️ <b>Расписание {day_text} ({target_day.strftime('%d.%m.%Y')}) для {escape_html(job.data['query'])}</b>\n\n"
+            schedule = pages[0]
+            if "Занятий нет" in schedule or "не найдено" in schedule:
+                msg = f"🎉 {day_text.capitalize()} для '{escape_html(job.data['query'])}' занятий нет!"
+            else:
+                msg = header + schedule
+
+        open_callback = f"{CALLBACK_DATA_NOTIFICATION_OPEN_PREFIX}{job.data['mode']}_{target_day.strftime('%Y-%m-%d')}"
+        kbd = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 Перейти к расписанию", callback_data=open_callback)],
+            [InlineKeyboardButton("🏠 В начало", callback_data=CALLBACK_DATA_BACK_TO_START)]
+        ])
+
+        try:
+            await context.bot.send_message(job.chat_id, msg, parse_mode=ParseMode.HTML, reply_markup=kbd)
+        except Forbidden:
+            logger.warning(f"Пользователь {job.chat_id} заблокировал бота. Удаляю задачу.")
+            job.schedule_removal()
+        except (NetworkError, TimedOut) as e:
+            logger.warning(f"Сетевая ошибка при отправке уведомления пользователю {job.chat_id}: {e}")
+            # Не удаляем задачу при временных сетевых ошибках
+    except Exception as e:
+        logger.error(f"Критическая ошибка в daily_schedule_job для пользователя {chat_id}: {e}", exc_info=True)
 
 async def check_schedule_changes_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("🔄 Запущена проверка изменений расписания")
@@ -94,9 +167,18 @@ async def check_schedule_changes_job(context: ContextTypes.DEFAULT_TYPE):
         context.bot_data['users_data_cache'] = {}
 
     today = datetime.date.today()
-    # Если сегодня воскресенье — проверяем только завтра (понедельник)
-    # Если сегодня суббота — проверяем сегодня и понедельник
-    from .utils import get_next_weekday
+    
+    # Определяем даты для проверки с учетом выходных
+    dates_to_check: List[datetime.date] = []
+    
+    # Проверяем сегодня (если это не воскресенье)
+    if not is_weekend(today):
+        dates_to_check.append(today)
+    
+    # Проверяем следующий рабочий день
+    next_workday = get_next_workday(today)
+    if next_workday not in dates_to_check:
+        dates_to_check.append(next_workday)
     
     active_users = context.bot_data.get('active_users', set()).copy()
     logger.info(f"👥 Проверяю расписание для {len(active_users)} активных пользователей")
@@ -106,45 +188,71 @@ async def check_schedule_changes_job(context: ContextTypes.DEFAULT_TYPE):
             user_data = context.bot_data['users_data_cache'].get(user_id, {})
             default_query = user_data.get(CTX_DEFAULT_QUERY)
             default_mode = user_data.get(CTX_DEFAULT_MODE)
+            
             if not default_query or not default_mode:
+                logger.debug(f"Пользователь {user_id} без установленной группы/преподавателя, пропускаем")
                 continue
 
             api_type = API_TYPE_GROUP if default_mode == MODE_STUDENT else API_TYPE_TEACHER
-            
-            # Определяем список дат для проверки
-            dates_to_check = [today.strftime("%Y-%m-%d")]
-            next_wd = get_next_weekday(today)
-            if next_wd != today:
-                dates_to_check.append(next_wd.strftime("%Y-%m-%d"))
-            
-            # Убираем дубликаты и фильтруем воскресенья
-            dates_to_check = list(dict.fromkeys(dates_to_check))
-            
-            changes_detected = [] # Список для сбора изменений
+            changes_detected: List[Dict[str, Any]] = []
 
-            for date_str in dates_to_check:
-                # Пропускаем проверку, если это воскресенье
-                date_obj_check = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-                if date_obj_check.weekday() == 6:
+            for date_obj in dates_to_check:
+                date_str = date_obj.strftime("%Y-%m-%d")
+                
+                # Пропускаем воскресенье (защита на всякий случай)
+                if date_obj.weekday() == 6:
                     continue
 
                 cache_key = f"{user_id}_{default_query}_{date_str}"
                 
                 try:
+                    # Получаем расписание без кеша для точного сравнения
                     pages, err_pages = await asyncio.wait_for(
                         get_schedule(date_str, default_query, api_type, use_cache=False), 
                         timeout=10.0
                     )
-                    if err_pages or not pages or "Занятий нет" in pages[0]:
-                        # Если пар нет, просто сохраняем пустой хеш, чтобы не уведомлять о "пустоте"
-                        admin_db.save_schedule_snapshot(cache_key, "empty")
+                    
+                    # Обрабатываем случай, когда пар нет или ошибка
+                    if err_pages or not pages or (pages and "Занятий нет" in pages[0]):
+                        # Если пар нет, сохраняем "empty" хеш
+                        current_hash = "empty"
+                        prev_hash = admin_db.get_schedule_snapshot(cache_key)
+                        
+                        # Не уведомляем о появлении "пустоты", если раньше уже была "пустота"
+                        # И не уведомляем, если это первое появление "пустоты" (prev_hash == None)
+                        if prev_hash and prev_hash != "empty" and prev_hash != current_hash:
+                            # Расписание изменилось с "непустого" на "пустое" - это изменение
+                            changes_detected.append({
+                                "date_str": date_str,
+                                "msg": f"🔔 <b>Изменения в расписании</b>\n\n📅 Дата: {date_str}\n📌 {escape_html(default_query)}\n\n➖ <b>Удалено:</b> Все занятия отменены",
+                                "pages": pages
+                            })
+                        
+                        # Сохраняем текущее состояние (пустое)
+                        admin_db.save_schedule_snapshot(cache_key, current_hash)
+                        context.bot_data[f"schedule_struct_{cache_key}"] = None
                         continue
                         
-                    new_schedule, _ = await asyncio.wait_for(
-                        get_schedule_structured(date_str, default_query, api_type),
-                        timeout=8.0
-                    )
-                except Exception:
+                    # Получаем структурированное расписание для сравнения
+                    try:
+                        new_schedule, _ = await asyncio.wait_for(
+                            get_schedule_structured(date_str, default_query, api_type),
+                            timeout=8.0
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Таймаут при получении структурированного расписания для {user_id}")
+                        continue
+                    except Exception as e:
+                        logger.error(f"Ошибка при получении структурированного расписания для {user_id}: {e}", exc_info=True)
+                        continue
+                except asyncio.TimeoutError:
+                    logger.warning(f"Таймаут при проверке расписания для пользователя {user_id} на дату {date_str}")
+                    continue
+                except (NetworkError, TimedOut) as e:
+                    logger.warning(f"Сетевая ошибка при проверке расписания для пользователя {user_id}: {e}")
+                    continue
+                except Exception as e:
+                    logger.error(f"Ошибка при проверке расписания для пользователя {user_id} на дату {date_str}: {e}", exc_info=True)
                     continue
 
                 current_hash = hash_schedule(pages)
@@ -156,19 +264,22 @@ async def check_schedule_changes_job(context: ContextTypes.DEFAULT_TYPE):
                 if prev_hash and prev_hash != "empty" and prev_hash != current_hash:
                     old_schedule_key = f"schedule_struct_{cache_key}"
                     old_schedule = context.bot_data.get(old_schedule_key)
-                    changes = compare_schedules(old_schedule, new_schedule)
                     
-                    if changes:
-                        changes_detected.append({
-                            "date_str": date_str,
-                            "msg": format_schedule_changes(changes, date_str, default_query),
-                            "pages": pages
-                        })
+                    # Сравниваем расписания только если есть старое структурированное расписание
+                    # Если его нет (например, после перезапуска), но хеш изменился - 
+                    # не уведомляем, так как не можем показать детали изменений
+                    if old_schedule:
+                        changes = compare_schedules(old_schedule, new_schedule)
+                        if changes:
+                            changes_detected.append({
+                                "date_str": date_str,
+                                "msg": format_schedule_changes(changes, date_str, default_query),
+                                "pages": pages
+                            })
 
-                # Обновляем снимки в базе
+                # Обновляем снимки в базе (всегда, даже если не было изменений)
                 admin_db.save_schedule_snapshot(cache_key, current_hash)
-                if new_schedule:
-                    context.bot_data[f"schedule_struct_{cache_key}"] = new_schedule
+                context.bot_data[f"schedule_struct_{cache_key}"] = new_schedule
 
             # Если есть изменения, отправляем ОДНИМ сообщением
             if changes_detected:
@@ -188,7 +299,11 @@ async def check_schedule_changes_job(context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(user_id, full_msg, parse_mode=ParseMode.HTML, reply_markup=kbd)
                     logger.info(f"✅ [{user_id}] Объединенное уведомление отправлено")
                 except Forbidden:
+                    logger.warning(f"Пользователь {user_id} заблокировал бота. Удаляю из активных.")
                     context.bot_data['active_users'].discard(user_id)
+                except (NetworkError, TimedOut) as e:
+                    logger.warning(f"Сетевая ошибка при отправке уведомления пользователю {user_id}: {e}")
+                    # Не удаляем пользователя из активных при временных сетевых ошибках
 
         except Exception as e:
             logger.error(f"Ошибка при проверке расписания для пользователя {user_id}: {e}")
@@ -256,7 +371,23 @@ async def cleanup_bot_data_job(context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"🧹 Очищено {deleted_count} старых записей из bot_data")
 
     # Очистка users_data_cache от неактивных пользователей (не использовались 24 часа)
-    # Это более сложная логика, можно добавить позже если нужно
+    if 'users_data_cache' in context.bot_data:
+        users_cache = context.bot_data['users_data_cache']
+        inactive_users: List[int] = []
+        
+        for user_id, user_data in users_cache.items():
+            # Если пользователь не в active_users более 24 часов, удаляем из кеша
+            # Это упрощенная логика, в реальности можно добавить timestamp последней активности
+            if user_id not in context.bot_data.get('active_users', set()):
+                # Проверяем, есть ли у пользователя установленная группа/преподаватель
+                if not user_data.get(CTX_DEFAULT_QUERY):
+                    inactive_users.append(user_id)
+        
+        for user_id in inactive_users:
+            users_cache.pop(user_id, None)
+        
+        if inactive_users:
+            logger.debug(f"Очищено {len(inactive_users)} неактивных пользователей из users_data_cache")
 
 
 async def automatic_backup_job(context: ContextTypes.DEFAULT_TYPE):
