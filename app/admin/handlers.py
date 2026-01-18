@@ -40,6 +40,7 @@ CALLBACK_ADMIN_MESSAGE_USER_PREFIX = "admin_message_user_"
 CALLBACK_ADMIN_MESSAGE_CANCEL = "admin_message_cancel"
 CALLBACK_USER_REPLY_ADMIN_PREFIX = "user_reply_admin_"
 CALLBACK_USER_DISMISS_ADMIN_PREFIX = "user_dismiss_admin_"
+CALLBACK_USER_REPLY_BROADCAST = "user_reply_broadcast"
 CALLBACK_ADMIN_CACHE = "admin_cache"
 CALLBACK_ADMIN_LOGS = "admin_logs"
 CALLBACK_ADMIN_BROADCAST = "admin_broadcast"
@@ -792,10 +793,11 @@ async def handle_direct_message_input(update: Update, context: ContextTypes.DEFA
     reply_states = _get_admin_reply_states(context)
     reply_states[target_id] = {"admin_id": admin_id, "from_message": True}
 
+    # Клавиатура для прямого сообщения - только "Ответить" и "Не ответить"
     user_keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✉️ Ответить", callback_data=f"{CALLBACK_USER_REPLY_ADMIN_PREFIX}{admin_id}"),
-            InlineKeyboardButton("✅ Спасибо", callback_data=f"{CALLBACK_USER_DISMISS_ADMIN_PREFIX}{admin_id}")
+            InlineKeyboardButton("❌ Не ответить", callback_data=f"{CALLBACK_USER_DISMISS_ADMIN_PREFIX}{admin_id}")
         ]
     ])
 
@@ -1324,6 +1326,14 @@ async def admin_confirm_broadcast_callback(update: Update, context: ContextTypes
 
     await update.callback_query.edit_message_text(f"📤 Начинаю рассылку для {total} пользователей...{info_suffix}")
 
+    # Формируем сообщение с эмодзи книги перед текстом
+    full_message = "📚 " + escape_html(message_text)
+    
+    # Создаем клавиатуру только с кнопкой "Спасибо" для массовой рассылки
+    broadcast_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Спасибо", callback_data=f"{CALLBACK_USER_DISMISS_ADMIN_PREFIX}0")]
+    ])
+
     success = 0
     failed = 0
 
@@ -1334,8 +1344,9 @@ async def admin_confirm_broadcast_callback(update: Update, context: ContextTypes
             user_id = int(raw_user_id)
             await context.bot.send_message(
                 chat_id=user_id,
-                text=message_text,
-                parse_mode=ParseMode.HTML
+                text=full_message,
+                parse_mode=ParseMode.HTML,
+                reply_markup=broadcast_keyboard
             )
             success += 1
             # Небольшая задержка, чтобы не превысить лимиты API

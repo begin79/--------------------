@@ -138,6 +138,67 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
              data.startswith(CALLBACK_DATA_EXPORT_SEMESTER):
             # Обработка экспорта
             await handle_export_callback(update, context, data)
+        elif data.startswith("user_reply_admin_") or data == "user_reply_broadcast":
+            # Обработка ответа пользователя администратору
+            from .admin.handlers import CALLBACK_USER_REPLY_ADMIN_PREFIX, CALLBACK_USER_REPLY_BROADCAST
+            from .handlers.admin_dialogs import process_user_reply_to_admin_message
+            from .admin.utils import get_root_admin_id
+            from .handlers.utils import safe_answer_callback_query
+            
+            user_id = update.effective_user.id if update.effective_user else None
+            if not user_id:
+                await safe_answer_callback_query(update.callback_query, "❌ Ошибка: не удалось определить пользователя", show_alert=True)
+                return
+            
+            # Определяем, кому отвечать
+            if data == "user_reply_broadcast":
+                # Ответ на массовую рассылку - отправляем корневому админу
+                admin_id = get_root_admin_id()
+                if not admin_id:
+                    await safe_answer_callback_query(update.callback_query, "❌ Администратор недоступен", show_alert=True)
+                    return
+                
+                # Устанавливаем состояние ожидания ответа
+                reply_states = context.application.bot_data.setdefault("admin_reply_states", {})
+                reply_states[user_id] = {"admin_id": admin_id, "from_broadcast": True}
+                
+                await safe_answer_callback_query(update.callback_query, "✉️ Теперь напишите ваш ответ")
+                await update.callback_query.message.reply_text(
+                    "✉️ <b>Ответ на сообщение от команды</b>\n\n"
+                    "Напишите ваш ответ. Ваше сообщение будет отправлено администратору.\n\n"
+                    "Для отмены отправьте: <code>отмена</code>",
+                    parse_mode=ParseMode.HTML
+                )
+            else:
+                # Ответ конкретному админу
+                admin_id_str = data.replace(CALLBACK_USER_REPLY_ADMIN_PREFIX, "")
+                try:
+                    admin_id = int(admin_id_str)
+                except (ValueError, TypeError):
+                    await safe_answer_callback_query(update.callback_query, "❌ Ошибка: неверный ID администратора", show_alert=True)
+                    return
+                
+                # Проверяем, что администратор существует
+                from .admin.utils import is_admin
+                if not is_admin(admin_id):
+                    await safe_answer_callback_query(update.callback_query, "❌ Администратор не найден", show_alert=True)
+                    return
+                
+                # Устанавливаем состояние ожидания ответа
+                reply_states = context.application.bot_data.setdefault("admin_reply_states", {})
+                reply_states[user_id] = {"admin_id": admin_id, "from_message": True}
+                
+                await safe_answer_callback_query(update.callback_query, "✉️ Теперь напишите ваш ответ")
+                await update.callback_query.message.reply_text(
+                    f"✉️ <b>Ответ администратору</b>\n\n"
+                    f"Напишите ваш ответ. Ваше сообщение будет отправлено администратору.\n\n"
+                    f"Для отмены отправьте: <code>отмена</code>",
+                    parse_mode=ParseMode.HTML
+                )
+        elif data.startswith("user_dismiss_admin_"):
+            # Обработка кнопки "Спасибо" / "Понятно"
+            from .handlers.utils import safe_answer_callback_query
+            await safe_answer_callback_query(update.callback_query, "✅ Хорошо!")
         elif data.startswith(CALLBACK_DATA_PREV_SCHEDULE_PREFIX) or \
              data.startswith(CALLBACK_DATA_NEXT_SCHEDULE_PREFIX) or \
              data.startswith(CALLBACK_DATA_REFRESH_SCHEDULE_PREFIX):
@@ -237,10 +298,11 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == CALLBACK_DATA_CANCEL_INPUT:
             from .handlers.utils import safe_answer_callback_query
             
-            # Очищаем все состояния ожидания ввода
+            # Очищаем все состояния ожидания ввода через менеджер
             user_data = context.user_data
-            user_data.pop(CTX_AWAITING_DEFAULT_QUERY, None)
-            user_data.pop(CTX_AWAITING_FEEDBACK, None)
+            manager = get_state_manager(user_data)
+            manager.clear_state(UserState.AWAITING_DEFAULT_QUERY)
+            manager.clear_state(UserState.AWAITING_FEEDBACK)
             
             await safe_answer_callback_query(update.callback_query, "Отменено")
             
@@ -300,7 +362,9 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_data = context.user_data
             # При входе в просмотр расписания сбрасываем режим ожидания отзыва,
             # чтобы "призрак" отзыва не перехватывал ввод пользователя.
-            user_data.pop(CTX_AWAITING_FEEDBACK, None)
+            manager = get_state_manager(user_data)
+            if manager.has_state(UserState.AWAITING_FEEDBACK):
+                manager.clear_state(UserState.AWAITING_FEEDBACK)
             query = user_data.get(CTX_DEFAULT_QUERY)
             default_mode = user_data.get(CTX_DEFAULT_MODE)
             
@@ -650,6 +714,7 @@ async def handle_feedback_callback(update: Update, context: ContextTypes.DEFAULT
     
     user_id = update.effective_user.id
     user_data = context.user_data
+    manager = get_state_manager(user_data)
     
     # Проверяем, может ли пользователь оставить отзыв
     can_leave, seconds_left = db.can_leave_feedback(user_id)
@@ -671,8 +736,9 @@ async def handle_feedback_callback(update: Update, context: ContextTypes.DEFAULT
         )
         return
     
-    # Устанавливаем флаг ожидания отзыва
-    user_data[CTX_AWAITING_FEEDBACK] = True
+    # Устанавливаем состояние ожидания отзыва через менеджер
+    # Менеджер автоматически очистит конфликтующие состояния
+    manager.set_state(UserState.AWAITING_FEEDBACK)
     
     # Показываем сообщение с просьбой написать отзыв
     text = (
