@@ -35,6 +35,7 @@ from .handlers.settings import settings_menu_callback
 from .handlers.settings import handle_reset_confirm
 from .handlers.notifications import toggle_daily_notifications_callback, set_notification_time, handle_notification_open_callback
 from .handlers.schedule import schedule_navigation_callback
+from .state_manager_v2 import get_state_manager, UserState
 # Функции экспорта
 from .export import generate_week_schedule_file, generate_schedule_image, get_week_schedule_structured, get_day_schedule_structured, generate_day_schedule_image
 from .schedule import search_entities
